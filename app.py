@@ -36,12 +36,11 @@ html, body, [data-testid="stAppViewContainer"] {
 
 /* Title */
 .main-title{
-  font-size: 40px !important;
+  font-size: 34px !important;
   font-weight: 800 !important;
   color: #0F4237 !important;
   text-align: center;
-  margin-top: 6px;
-  margin-bottom: 8px;
+  margin: 0;
   text-shadow: 0 1px 0 rgba(255,255,255,0.7);
 }
 
@@ -107,7 +106,7 @@ if "selected_milestone" not in st.session_state:
     st.session_state.selected_milestone = None
 
 # ---------------------------------
-# Logo finder + HTML tag helper (force same height)
+# Logo finder + HTML tag helper
 # ---------------------------------
 def find_logo(possible_names):
     cwd = Path(".").resolve()
@@ -123,12 +122,12 @@ def find_logo(possible_names):
                         return str(child)
     return None
 
-def img_tag(path: str, height_px: int = 72, alt: str = "") -> str:
+def img_tag(path: str, height_px: int = 65, alt: str = "") -> str:
     try:
         b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
         ext = Path(path).suffix.lower()
         mime = "image/png" if ext in [".png"] else ("image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png")
-        return f"<img alt='{alt}' src='data:{mime};base64,{b64}' style='height:{height_px}px; vertical-align:middle; display:block;'/>"
+        return f"<img alt='{alt}' src='data:{mime};base64,{b64}' style='height:{height_px}px;'/>"
     except Exception:
         return ""
 
@@ -137,7 +136,7 @@ NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
                         "12th_year_anniversary_logo_transparent.PNG"])
 
 # ---------------------------------
-# TOP: Live Date/Time (extreme left) – single line
+# TOP: Live Date/Time (extreme left)
 # ---------------------------------
 components.html("""
   <div style="font-family:Poppins,system-ui,Arial; display:flex; align-items:center; gap:18px;
@@ -163,23 +162,17 @@ components.html("""
 """, height=30)
 
 # ---------------------------------
-# Logos row (same line, same height)
+# Logos + Title Row (inline)
 # ---------------------------------
-logo_left, spacer, logo_right = st.columns([1, 6, 1])
-with logo_left:
+col1, col2, col3 = st.columns([1, 4, 1])
+with col1:
     if MNRE_LOGO:
-        st.markdown(img_tag(MNRE_LOGO, height_px=72, alt="MNRE"), unsafe_allow_html=True)
-with logo_right:
+        st.markdown(img_tag(MNRE_LOGO, height_px=65, alt="MNRE"), unsafe_allow_html=True)
+with col2:
+    st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
+with col3:
     if NSEFI_LOGO:
-        st.markdown(img_tag(NSEFI_LOGO, height_px=72, alt="NSEFI"), unsafe_allow_html=True)
-
-# Add a couple of blank lines before the title
-st.markdown("<br><br>", unsafe_allow_html=True)
-
-# ---------------------------------
-# Title (centered) a couple of lines below the logos
-# ---------------------------------
-st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
+        st.markdown(img_tag(NSEFI_LOGO, height_px=65, alt="NSEFI"), unsafe_allow_html=True)
 
 # ---------------------------------
 # Load milestones dynamically + Dummy projects
@@ -192,11 +185,9 @@ def load_milestones_clean(file_path: str, file_mtime: float):
     df = pd.read_excel(file_path, sheet_name="Sheet1")
     df = df.rename(columns={"Step No": "Step_No", "Checkpoints": "Checkpoint", "Milestones": "Milestone"})
     df = df.dropna(how="all")
-
     for c in ["Checkpoint", "Milestone"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
-
     df["Checkpoint"] = df["Checkpoint"].replace({"nan": pd.NA}).ffill()
     if "Step_No" in df.columns:
         df = df.sort_values("Step_No")
@@ -207,6 +198,7 @@ if Path(FILE_PATH).exists():
 else:
     milestones_df = pd.DataFrame()
 
+# Dynamic checkpoint order from Excel
 if not milestones_df.empty:
     cp_order_df = (
         milestones_df[["Step_No", "Checkpoint"]]
@@ -271,7 +263,7 @@ def render_checkpoints_row():
                     st.session_state.selected_milestone = None
 
 # ---------------------------------
-# Milestones grid
+# Milestones grid (wrap)
 # ---------------------------------
 def render_milestones_grid(cp: str, cols_per_row: int = 4):
     if not cp: return
@@ -293,7 +285,7 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
             j += 1
 
 # ---------------------------------
-# Map
+# Map (capacity bubbles)
 # ---------------------------------
 STATE_CENTROIDS = {
     "Rajasthan":  (27.0238, 74.2179),
@@ -373,7 +365,19 @@ def render_dashboard_template(df: pd.DataFrame):
 # ---------------------------------
 if not milestones_df.empty and not projects_df.empty and CHECKPOINT_ORDER:
     # 1) Checkpoints single line
-    render_checkpoints_row()
+    st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
+    cols = st.columns(len(CHECKPOINT_ORDER))
+    for i, cp in enumerate(CHECKPOINT_ORDER, start=1):
+        count = int(projects_df[projects_df["Checkpoint"] == cp].shape[0])
+        label = f"{i}. {cp}\n{count} projects"
+        with cols[i-1]:
+            if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
+                if st.session_state.selected_checkpoint == cp:
+                    st.session_state.selected_checkpoint = None
+                    st.session_state.selected_milestone = None
+                else:
+                    st.session_state.selected_checkpoint = cp
+                    st.session_state.selected_milestone = None
 
     # 2) Milestones grid (toggle) under selected checkpoint
     if st.session_state.selected_checkpoint:
@@ -382,9 +386,10 @@ if not milestones_df.empty and not projects_df.empty and CHECKPOINT_ORDER:
     # 3) India map
     render_state_bubble_map(projects_df)
 
-    # 4) Space then dashboard
+    # add spacing before dashboard
     st.markdown("<br><br>", unsafe_allow_html=True)
 
+    # 4) Filter for dashboard + optional table
     current_df = projects_df.copy()
     if st.session_state.get("selected_checkpoint"):
         current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
@@ -395,4 +400,7 @@ if not milestones_df.empty and not projects_df.empty and CHECKPOINT_ORDER:
             .reset_index(drop=True)
         )
 
+    # 5) Tableau-like dashboard
     render_dashboard_template(current_df)
+else:
+    st.info("Place 'Milestones in RE projects.xlsx' in the app folder to see checkpoints, milestones, projects and dashboards.")
