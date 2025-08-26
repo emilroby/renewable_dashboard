@@ -137,40 +137,62 @@ with top_right:
         st.caption(" ")
 
 # ----------------------------
-# Data: Milestones + Dummy Projects
+# Data: Milestones (dynamic) + Dummy Projects
 # ----------------------------
-CHECKPOINT_ORDER = [
-    "Issuance of LOA (Project Allocation) / LOI",
-    "Applied for connectivity (NSWS)",
-    "Conn BG 1/2",
-    "Conn BG 3/4",
-    "FTC (Grid India/NLDC/RLDC)"
-]
+FILE_PATH = "Milestones in RE projects.xlsx"
+FILE_MTIME = Path(FILE_PATH).stat().st_mtime if Path(FILE_PATH).exists() else 0
 
 @st.cache_data
-def load_milestones_clean():
-    df = pd.read_excel("Milestones in RE projects.xlsx", sheet_name="Sheet1")
+def load_milestones_clean(file_path: str, file_mtime: float):
+    """Load and clean milestones; cache invalidates when file mtime changes."""
+    df = pd.read_excel(file_path, sheet_name="Sheet1")
     df = df.rename(columns={"Step No": "Step_No", "Checkpoints": "Checkpoint", "Milestones": "Milestone"})
     df = df.dropna(how="all")
+
+    # Trim & clean
     for c in ["Checkpoint", "Milestone"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
     df["Checkpoint"] = df["Checkpoint"].replace({"nan": pd.NA}).ffill()
+
+    # Fill blank milestone under LOA row as "LoA" (common pattern)
     is_loa_cp = df["Checkpoint"] == "Issuance of LOA (Project Allocation) / LOI"
     df.loc[is_loa_cp & (df["Milestone"].isna() | (df["Milestone"].str.len()==0) | (df["Milestone"].str.lower()=="nan")), "Milestone"] = "LoA"
+
+    # Remove empties
     df = df[~df["Milestone"].isna()]
     df = df[df["Milestone"].str.len() > 0]
     df = df[df["Milestone"].str.lower() != "nan"]
-    df = df[df["Checkpoint"].isin(CHECKPOINT_ORDER)]
+
+    # Sort by step if available
     if "Step_No" in df.columns:
         df = df.sort_values("Step_No")
+
     return df.reset_index(drop=True)
 
-try:
-    milestones_df = load_milestones_clean()
-except Exception as e:
+if Path(FILE_PATH).exists():
+    try:
+        milestones_df = load_milestones_clean(FILE_PATH, FILE_MTIME)
+    except Exception as e:
+        milestones_df = pd.DataFrame()
+        st.error(f"Could not load '{FILE_PATH}' — {e}")
+else:
     milestones_df = pd.DataFrame()
-    st.error(f"Could not load 'Milestones in RE projects.xlsx' — {e}")
+    st.warning(f"'{FILE_PATH}' not found in the app folder.")
+
+# Build CHECKPOINT_ORDER dynamically from Excel (first occurrence order by Step_No)
+if not milestones_df.empty:
+    cp_order_df = (
+        milestones_df[["Step_No", "Checkpoint"]]
+        .dropna(subset=["Checkpoint"])
+        .drop_duplicates(subset=["Checkpoint"], keep="first")
+    )
+    if "Step_No" in cp_order_df.columns:
+        CHECKPOINT_ORDER = cp_order_df.sort_values("Step_No")["Checkpoint"].tolist()
+    else:
+        CHECKPOINT_ORDER = cp_order_df["Checkpoint"].tolist()
+else:
+    CHECKPOINT_ORDER = []
 
 def random_date(start: datetime, end: datetime) -> datetime:
     delta = end - start
@@ -202,8 +224,15 @@ def generate_projects(n=900, mdf: pd.DataFrame = None):
 
 projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
 
+# Optional: quick cache-buster while iterating
+cols_reload = st.columns([1,6,1])
+with cols_reload[0]:
+    if st.button("🔄 Force reload milestones"):
+        st.cache_data.clear()
+        st.rerun()
+
 # ----------------------------
-# Checkpoints row (all in one line, numbered 1..N)
+# Checkpoints row (single line, numbered 1..N)
 # ----------------------------
 def render_checkpoints_row():
     st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
@@ -256,7 +285,7 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
             j += 1
 
 # ----------------------------
-# India bubble map
+# India bubble map (capacity-scaled)
 # ----------------------------
 STATE_CENTROIDS = {
     "Rajasthan":  (27.0238, 74.2179),
@@ -359,8 +388,8 @@ def render_dashboard(df: pd.DataFrame, title: str):
 # ----------------------------
 # ---- PAGE RENDER ----
 # ----------------------------
-if milestones_df.empty or projects_df.empty:
-    st.info("Place 'Milestones in RE projects.xlsx' in the app folder to see checkpoints, milestones and projects.")
+if milestones_df.empty or projects_df.empty or not CHECKPOINT_ORDER:
+    st.info("Add/update 'Milestones in RE projects.xlsx' (with Sheet1 & columns: Step No, Checkpoints, Milestones) to see checkpoints, milestones and projects.")
 else:
     # 1) Checkpoints row (single line, numbered 1..N)
     render_checkpoints_row()
