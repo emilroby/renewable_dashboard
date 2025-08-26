@@ -53,37 +53,36 @@ html, body, [data-testid="stAppViewContainer"] {
   text-align: center;
 }
 
-/* Buttons (checkpoints/milestones) */
+/* Big cards as buttons (text wraps nicely) */
 div.stButton > button {
-  border-radius: 12px !important;
+  border-radius: 16px !important;
   font-size: 16px !important;
-  font-weight: 600 !important;
-  padding: 12px 14px !important;
-  background-color: #f9f9f9 !important;
+  font-weight: 700 !important;
+  line-height: 1.25 !important;
+  padding: 18px 22px !important;
+  background-color: #ffffff !important;
   border: 2px solid #1b5e20 !important;
-  color: #1b5e20 !important;
-  box-shadow: 2px 2px 10px rgba(0,0,0,0.10);
+  color: #0F4237 !important;
+  box-shadow: 0 8px 22px rgba(16,40,32,0.08);
   transition: all 0.18s ease-in-out;
   width: 100%;
+  white-space: normal !important;
+  word-break: break-word !important;
+  text-align: left !important;
 }
 div.stButton > button:hover {
   background-color: #1b5e20 !important;
-  color: white !important;
+  color: #ffffff !important;
   transform: translateY(-1px);
 }
 
-/* Contact cards */
+/* Simple card (container style) */
 .card {
   border-radius: 16px;
   padding: 18px;
   background: #ffffff;
   border: 1px solid #e8ecef;
   box-shadow: 0 10px 22px rgba(16,40,32,0.06);
-}
-.mapbox {
-  height: 220px; border-radius: 14px; border: 1px dashed #cfd8dc;
-  display: flex; align-items: center; justify-content: center; color: #6b7b83;
-  background: #f8faf9; margin-top: 10px;
 }
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
@@ -92,33 +91,23 @@ div.stButton > button:hover {
 # ----------------------------
 # Session state
 # ----------------------------
-if "page" not in st.session_state:
-    st.session_state.page = "Home"
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = None
 if "selected_state" not in st.session_state:
     st.session_state.selected_state = None
+if "selected_checkpoint" not in st.session_state:
+    st.session_state.selected_checkpoint = None
+if "selected_milestone" not in st.session_state:
+    st.session_state.selected_milestone = None
 
 # ----------------------------
 # Robust logo finder (handles case/path differences)
 # ----------------------------
 def find_logo(possible_names):
-    """
-    Look for a logo by scanning the project root and first-level subfolders
-    for any of the given possible_names. Case-insensitive fallback included.
-    Returns a string path if found, else None.
-    """
     cwd = Path(".").resolve()
-
-    # exact match in root and first-level subfolders
     for p in [cwd] + [p for p in cwd.iterdir() if p.is_dir()]:
         for name in possible_names:
             exact = p / name
             if exact.exists():
                 return str(exact)
-        # case-insensitive sweep in this directory
         for child in p.glob("*"):
             if child.is_file():
                 for name in possible_names:
@@ -134,38 +123,18 @@ NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
 # Header row (MNRE left • Title center • NSEFI right)
 # ----------------------------
 top_left, top_mid, top_right = st.columns([1, 6, 1])
-
 with top_left:
     if MNRE_LOGO:
         st.image(MNRE_LOGO, width=120)
     else:
         st.caption(" ")
-
 with top_mid:
     st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
-
 with top_right:
     if NSEFI_LOGO:
         st.image(NSEFI_LOGO, width=140)
     else:
         st.caption(" ")
-
-# ----------------------------
-# Simple nav (same tab)
-# ----------------------------
-nav1, nav2, nav3 = st.columns(3)
-with nav1:
-    if st.button("Home", use_container_width=True):
-        st.session_state.page = "Home"
-        st.session_state.pop("selected_checkpoint", None)
-        st.session_state.pop("selected_milestone", None)
-        st.session_state.selected_state = None
-with nav2:
-    if st.button("Register Your Project", use_container_width=True):
-        st.session_state.page = "Register"
-with nav3:
-    if st.button("Contact Us", use_container_width=True):
-        st.session_state.page = "Contact"
 
 # ----------------------------
 # Data: Milestones + Dummy Projects
@@ -234,6 +203,59 @@ def generate_projects(n=900, mdf: pd.DataFrame = None):
 projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
 
 # ----------------------------
+# Checkpoints row (all in one line, numbered 1..N)
+# ----------------------------
+def render_checkpoints_row():
+    st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
+    cps = CHECKPOINT_ORDER
+    if not cps:
+        return
+    cols = st.columns(len(cps))
+    for i, cp in enumerate(cps, start=1):
+        count = int(projects_df[projects_df["Checkpoint"] == cp].shape[0])
+        label = f"{i}. {cp}\n{count} projects"
+        with cols[i-1]:
+            if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
+                # Toggle: clicking same cp collapses milestones
+                if st.session_state.selected_checkpoint == cp:
+                    st.session_state.selected_checkpoint = None
+                    st.session_state.selected_milestone = None
+                else:
+                    st.session_state.selected_checkpoint = cp
+                    st.session_state.selected_milestone = None
+
+# ----------------------------
+# Milestones grid (horizontal wrapping; numbered X.1, X.2..., no arrows)
+# ----------------------------
+def render_milestones_grid(cp: str, cols_per_row: int = 4):
+    if not cp:
+        return
+    cp_index = CHECKPOINT_ORDER.index(cp) + 1
+    ms_series = (
+        milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"]
+        .dropna().astype(str).str.strip().replace({"nan": ""})
+    )
+    ms_unique = [m for m in ms_series.unique().tolist() if m]
+    if not ms_unique:
+        st.info("⚠️ No milestones defined for this checkpoint in the Excel.")
+        return
+
+    st.markdown(f"<h2 class='section-title'>Milestones — {cp}</h2>", unsafe_allow_html=True)
+
+    j = 1
+    for start in range(0, len(ms_unique), cols_per_row):
+        row = ms_unique[start:start+cols_per_row]
+        cols = st.columns(len(row))
+        for c_i, m in enumerate(row):
+            m_count = int(projects_df[projects_df["Milestone"] == m].shape[0])
+            label = f"{cp_index}.{j} {m}\n{m_count} projects"
+            with cols[c_i]:
+                if st.button(label, key=f"ms_btn_{cp_index}_{j}", use_container_width=True):
+                    # Toggle: clicking same milestone unselects
+                    st.session_state.selected_milestone = (None if st.session_state.selected_milestone == m else m)
+            j += 1
+
+# ----------------------------
 # India bubble map
 # ----------------------------
 STATE_CENTROIDS = {
@@ -297,7 +319,7 @@ def render_state_bubble_map(df: pd.DataFrame):
         st.success(f"📍 **{sel}** — Projects: **{total_p}**, Capacity: **{total_c} MW**")
 
 # ----------------------------
-# Plotly dashboard (mixed charts)
+# Charts & Table
 # ----------------------------
 def render_dashboard(df: pd.DataFrame, title: str):
     st.markdown(f"<h2 class='section-title'>{title}</h2>", unsafe_allow_html=True)
@@ -318,8 +340,7 @@ def render_dashboard(df: pd.DataFrame, title: str):
     # Line: Projects over time (by milestone month)
     ts = df.copy()
     ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
-    ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count()
-    ts_agg.rename(columns={"Project_ID":"Projects"}, inplace=True)
+    ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count().rename(columns={"Project_ID":"Projects"})
     fig3 = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (monthly)")
     st.plotly_chart(fig3, use_container_width=True)
 
@@ -336,156 +357,37 @@ def render_dashboard(df: pd.DataFrame, title: str):
     st.plotly_chart(fig5, use_container_width=True)
 
 # ----------------------------
-# Enhanced Contact (with FAQ)
+# ---- PAGE RENDER ----
 # ----------------------------
-def render_contact_enhanced():
-    st.markdown("<h1 class='main-title'>Contact Us</h1>", unsafe_allow_html=True)
-    left, right = st.columns([1.15, 0.85], vertical_alignment="top")
-    with left:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### Get in touch")
-        st.markdown("Tell us about your project. We’ll get back within 1 business day.")
-        with st.form("contact_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                name = st.text_input("Full name*")
-                email = st.text_input("Work email*")
-            with c2:
-                org = st.text_input("Organization / Company")
-                phone = st.text_input("Phone (optional)")
-            message = st.text_area("Your message*", height=140)
-            send = st.form_submit_button("Send message")
-            if send:
-                if name and email and message:
-                    st.success("✅ Thanks! We’ll be in touch shortly.")
-                else:
-                    st.error("Please fill in name, email, and message.")
-        st.markdown('</div>', unsafe_allow_html=True)
-        st.markdown('<div class="card" style="margin-top:14px;">', unsafe_allow_html=True)
-        st.markdown("### FAQ")
-        with st.expander("How do I register a new project?"):
-            st.write("Go to **Register Your Project**, fill out the form (including **NSWS ID**), and upload supporting documents.")
-        with st.expander("Who can update project details?"):
-            st.write("Authorized developers can log in and edit only their projects. Admins can review submissions.")
-        with st.expander("What files are accepted as supporting documents?"):
-            st.write("PDF, DOCX, and XLSX currently.")
-        with st.expander("How are project milestones updated?"):
-            st.write("Developers can update milestone progress after logging in; changes are tracked with date stamps.")
-        st.markdown('</div>', unsafe_allow_html=True)
-    with right:
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown("### NSEFI Headquarters")
-        st.write("National Solar Energy Federation of India (NSEFI)")
-        st.write("New Delhi, India")
-        st.markdown('<div class="mapbox">Map placeholder (embed map/iframe here)</div>', unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+if milestones_df.empty or projects_df.empty:
+    st.info("Place 'Milestones in RE projects.xlsx' in the app folder to see checkpoints, milestones and projects.")
+else:
+    # 1) Checkpoints row (single line, numbered 1..N)
+    render_checkpoints_row()
 
-# ----------------------------
-# Pages
-# ----------------------------
-if st.session_state.page == "Home":
-    st.markdown("<h2 class='subheader'>Project Roadmap</h2>", unsafe_allow_html=True)
+    # 2) Milestones grid under the selected checkpoint (toggle)
+    if st.session_state.selected_checkpoint:
+        render_milestones_grid(st.session_state.selected_checkpoint, cols_per_row=4)
 
-    if milestones_df.empty or projects_df.empty:
-        st.info("Place 'Milestones in RE projects.xlsx' in the app folder to see checkpoints, milestones and projects.")
-    else:
-        # 1) Checkpoints
-        cols = st.columns(len(CHECKPOINT_ORDER))
-        for i, cp in enumerate(CHECKPOINT_ORDER):
-            count = projects_df[projects_df["Checkpoint"] == cp].shape[0]
-            with cols[i]:
-                if st.button(f"{cp}\n({count} projects)", key=f"cp_{i}"):
-                    st.session_state.selected_checkpoint = cp
-                    st.session_state.pop("selected_milestone", None)
-                    st.session_state.selected_state = None
+    # 3) India map
+    render_state_bubble_map(projects_df)
 
-        # 2) Milestones for selected checkpoint
-        if "selected_checkpoint" in st.session_state:
-            cp = st.session_state.selected_checkpoint
-            st.markdown(f"<h2 class='subheader'>Milestones in {cp}</h2>", unsafe_allow_html=True)
-            ms_list = (
-                milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"]
-                .dropna().astype(str).str.strip().replace({"nan": ""})
-            )
-            ms_unique = [m for m in ms_list.unique().tolist() if m]
-            if len(ms_unique) > 0:
-                cols = st.columns(min(len(ms_unique), 4))
-                for j, m in enumerate(ms_unique):
-                    count = projects_df[projects_df["Milestone"] == m].shape[0]
-                    col = cols[j % len(cols)]
-                    with col:
-                        if st.button(f"{m}\n({count} projects)", key=f"ms_{j}"):
-                            st.session_state.selected_milestone = m
-                            st.session_state.selected_state = None
-            else:
-                st.info("⚠️ No milestones defined for this checkpoint in the Excel.")
-
-        # 3) India map (bubble)
-        render_state_bubble_map(projects_df)
-
-        # 4) Filtered dataset + Projects table (with Milestone Start Date; no status)
-        current_df = projects_df.copy()
-        dash_title = "Portfolio overview"
-
-        if st.session_state.get("selected_checkpoint"):
-            current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
-            dash_title = f"Dashboard — {st.session_state.selected_checkpoint}"
-
-        if st.session_state.get("selected_milestone"):
-            current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
-            dash_title = f"Dashboard — {st.session_state.selected_milestone}"
-            st.markdown(f"<h2 class='subheader'>Projects at milestone: {st.session_state.selected_milestone}</h2>", unsafe_allow_html=True)
-            st.metric("Total Projects", len(current_df))
-            st.dataframe(
-                current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
-                .reset_index(drop=True)
-            )
-
-        if st.session_state.get("selected_state"):
-            current_df = current_df[current_df["State"] == st.session_state.selected_state]
-            dash_title += f" — {st.session_state.selected_state}"
-
-        # 5) Mixed charts
-        render_dashboard(current_df, dash_title)
-
-elif st.session_state.page == "Register":
-    st.markdown("<h1 class='main-title'>Register Your Project</h1>", unsafe_allow_html=True)
-
-    if not st.session_state.logged_in:
-        with st.form("login_form"):
-            st.write("🔑 Login to manage existing projects")
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            login_btn = st.form_submit_button("Login")
-            if login_btn:
-                if username and password:
-                    st.session_state.logged_in = True
-                    st.session_state.username = username
-                    st.success(f"Welcome, {username}! You are now logged in.")
-                else:
-                    st.error("Please enter both username and password")
-
-    if st.session_state.logged_in:
-        st.success(f"Hello {st.session_state.username}, here are your projects:")
-        if not projects_df.empty:
-            st.dataframe(projects_df.sample(min(5, len(projects_df))))  # demo only
-        else:
-            st.info("No sample projects to display yet.")
-
-    st.markdown("### Or Register a New Project")
-    with st.form("project_form"):
-        project_name = st.text_input("Project Name")
-        developer = st.text_input("Developer Name")
-        nsws_id = st.text_input("NSWS ID")  # <-- Required field
-        capacity = st.number_input("Capacity (MW)", min_value=10, max_value=1000, step=10)
-        state = st.text_input("State")
-        upload = st.file_uploader("Upload Supporting Documents", type=["pdf", "docx", "xlsx"])
-        submit = st.form_submit_button("Register Project")
-        if submit:
-            if project_name and developer and state and nsws_id:
-                st.success(f"✅ Project '{project_name}' (NSWS ID: {nsws_id}) registered successfully!")
-            else:
-                st.error("Please fill Project Name, Developer, State, and NSWS ID.")
-
-elif st.session_state.page == "Contact":
-    render_contact_enhanced()
+    # 4) Table + Charts (filtered by selections)
+    current_df = projects_df.copy()
+    dash_title = "Portfolio overview"
+    if st.session_state.get("selected_checkpoint"):
+        current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
+        dash_title = f"Dashboard — {st.session_state.selected_checkpoint}"
+    if st.session_state.get("selected_milestone"):
+        current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
+        dash_title = f"Dashboard — {st.session_state.selected_milestone}"
+        st.markdown(f"<h2 class='subheader'>Projects at milestone: {st.session_state.selected_milestone}</h2>", unsafe_allow_html=True)
+        st.metric("Total Projects", len(current_df))
+        st.dataframe(
+            current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
+            .reset_index(drop=True)
+        )
+    if st.session_state.get("selected_state"):
+        current_df = current_df[current_df["State"] == st.session_state.selected_state]
+        dash_title += f" — {st.session_state.selected_state}"
+    render_dashboard(current_df, dash_title)
