@@ -4,6 +4,7 @@ import pandas as pd
 import random
 import math
 from datetime import datetime, timedelta
+from pathlib import Path
 
 # Interactive viz
 import plotly.express as px
@@ -31,15 +32,18 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .stApp { font-family: 'Poppins', sans-serif; }
 
+/* Title */
 .main-title{
   font-size: 40px !important;
   font-weight: 800 !important;
   color: #0F4237 !important;
   text-align: center;
-  margin-top: -6px;
+  margin-top: 6px;
   margin-bottom: 8px;
   text-shadow: 0 1px 0 rgba(255,255,255,0.7);
 }
+
+/* Section headings */
 .subheader, .section-title {
   font-size: 26px !important;
   font-weight: 700 !important;
@@ -49,7 +53,7 @@ html, body, [data-testid="stAppViewContainer"] {
   text-align: center;
 }
 
-/* General button (checkpoint/milestone buttons) */
+/* Buttons (checkpoints/milestones) */
 div.stButton > button {
   border-radius: 12px !important;
   font-size: 16px !important;
@@ -81,14 +85,6 @@ div.stButton > button:hover {
   display: flex; align-items: center; justify-content: center; color: #6b7b83;
   background: #f8faf9; margin-top: 10px;
 }
-
-/* Top-right logo container (keeps the image above/right of title) */
-.header-row { display: grid; grid-template-columns: 1fr auto; align-items: start; }
-.header-logo { margin-top: -10px; max-width: 140px; }
-@media (max-width: 600px){
-  .header-row { grid-template-columns: 1fr; }
-  .header-logo { margin: 0 auto 6px; }
-}
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
 """, unsafe_allow_html=True)
@@ -106,20 +102,57 @@ if "selected_state" not in st.session_state:
     st.session_state.selected_state = None
 
 # ----------------------------
-# Header (logo + title + navigation row)
+# Robust logo finder (handles case/path differences)
 # ----------------------------
-# Top-right logo slightly above the title
-hdr_left, hdr_right = st.columns([6, 1])
-with hdr_left:
-    st.markdown("<div class='header-row'></div>", unsafe_allow_html=True)
-with hdr_right:
-    try:
-        st.image("12th_year_anniversary_logo_transparent.png", use_container_width=True, caption=None)
-    except Exception:
-        pass  # if the file is missing, don't error
+def find_logo(possible_names):
+    """
+    Look for a logo by scanning the project root and first-level subfolders
+    for any of the given possible_names. Case-insensitive fallback included.
+    Returns a string path if found, else None.
+    """
+    cwd = Path(".").resolve()
 
-st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
+    # exact match in root and first-level subfolders
+    for p in [cwd] + [p for p in cwd.iterdir() if p.is_dir()]:
+        for name in possible_names:
+            exact = p / name
+            if exact.exists():
+                return str(exact)
+        # case-insensitive sweep in this directory
+        for child in p.glob("*"):
+            if child.is_file():
+                for name in possible_names:
+                    if child.name.lower() == name.lower():
+                        return str(child)
+    return None
 
+MNRE_LOGO = find_logo(["MNRE.png", "mnre.png", "MNRE.PNG"])
+NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
+                        "12th_year_anniversary_logo_transparent.PNG"])
+
+# ----------------------------
+# Header row (MNRE left • Title center • NSEFI right)
+# ----------------------------
+top_left, top_mid, top_right = st.columns([1, 6, 1])
+
+with top_left:
+    if MNRE_LOGO:
+        st.image(MNRE_LOGO, width=120)
+    else:
+        st.caption(" ")
+
+with top_mid:
+    st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
+
+with top_right:
+    if NSEFI_LOGO:
+        st.image(NSEFI_LOGO, width=140)
+    else:
+        st.caption(" ")
+
+# ----------------------------
+# Simple nav (same tab)
+# ----------------------------
 nav1, nav2, nav3 = st.columns(3)
 with nav1:
     if st.button("Home", use_container_width=True):
@@ -264,29 +297,39 @@ def render_state_bubble_map(df: pd.DataFrame):
         st.success(f"📍 **{sel}** — Projects: **{total_p}**, Capacity: **{total_c} MW**")
 
 # ----------------------------
-# Plotly dashboard (charts)
+# Plotly dashboard (mixed charts)
 # ----------------------------
 def render_dashboard(df: pd.DataFrame, title: str):
     st.markdown(f"<h2 class='section-title'>{title}</h2>", unsafe_allow_html=True)
     if df.empty:
         return
+
+    # Donut: Projects share by state
     share_state = df["State"].value_counts().reset_index()
     share_state.columns = ["State", "Projects"]
     fig1 = px.pie(share_state, names="State", values="Projects", hole=0.45, title="Projects share by state")
     st.plotly_chart(fig1, use_container_width=True)
+
+    # Bar: Capacity by state
     cap_by_state = df.groupby("State", as_index=False)["Capacity_MW"].sum().sort_values("Capacity_MW", ascending=False)
     fig2 = px.bar(cap_by_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)")
     st.plotly_chart(fig2, use_container_width=True)
+
+    # Line: Projects over time (by milestone month)
     ts = df.copy()
     ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
     ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count()
     ts_agg.rename(columns={"Project_ID":"Projects"}, inplace=True)
     fig3 = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (monthly)")
     st.plotly_chart(fig3, use_container_width=True)
+
+    # Scatter: Capacity vs milestone date by state
     fig4 = px.scatter(df, x="Milestone_Start_Date", y="Capacity_MW",
                       color="State", hover_data=["Project_ID", "Milestone", "Checkpoint"],
                       title="Capacity vs milestone date by state")
     st.plotly_chart(fig4, use_container_width=True)
+
+    # Bar: Projects by milestone
     ms_counts = df["Milestone"].value_counts().reset_index()
     ms_counts.columns = ["Milestone", "Projects"]
     fig5 = px.bar(ms_counts, x="Milestone", y="Projects", title="Projects by milestone")
@@ -433,7 +476,7 @@ elif st.session_state.page == "Register":
     with st.form("project_form"):
         project_name = st.text_input("Project Name")
         developer = st.text_input("Developer Name")
-        nsws_id = st.text_input("NSWS ID")
+        nsws_id = st.text_input("NSWS ID")  # <-- Required field
         capacity = st.number_input("Capacity (MW)", min_value=10, max_value=1000, step=10)
         state = st.text_input("State")
         upload = st.file_uploader("Upload Supporting Documents", type=["pdf", "docx", "xlsx"])
