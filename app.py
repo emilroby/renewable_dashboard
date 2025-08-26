@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 import random
 import math
+from datetime import datetime, timedelta
 
 # Interactive viz
 import plotly.express as px
@@ -18,49 +19,27 @@ st.set_page_config(
 )
 
 # ----------------------------
-# Global Styles (animated background + lifted title + button styles)
+# Global Styles
 # ----------------------------
 st.markdown("""
 <style>
-/* ===== Animated, professional background ===== */
 html, body, [data-testid="stAppViewContainer"] {
   background:
     radial-gradient(1200px 700px at 12% -10%, #F3FAF6 0%, transparent 60%),
     radial-gradient(1200px 700px at 90% 0%, #E8F3EE 0%, transparent 65%),
     linear-gradient(180deg, #FFFFFF 0%, #F7FBF9 100%);
 }
-[data-testid="stAppViewContainer"]::before {
-  content:""; position: fixed; inset: 0; pointer-events: none; z-index: -2;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' opacity='0.05' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.7' numOctaves='3'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: cover;
-}
-[data-testid="stAppViewContainer"]::after {
-  content:""; position: fixed; inset: -20% -10% -10% -10%; pointer-events: none; z-index: -1;
-  background:
-    radial-gradient(400px 300px at 15% 10%, rgba(30,106,84,0.12), transparent 60%),
-    radial-gradient(500px 350px at 85% 20%, rgba(20,80,65,0.10), transparent 65%),
-    radial-gradient(600px 400px at 50% 110%, rgba(8,54,45,0.08), transparent 70%);
-  animation: floatGrad 18s ease-in-out infinite alternate;
-}
-@keyframes floatGrad {
-  0%   { transform: translateY(0px) translateX(0px);   filter: hue-rotate(0deg);   }
-  100% { transform: translateY(-12px) translateX(6px); filter: hue-rotate(-10deg); }
-}
-
 .stApp { font-family: 'Poppins', sans-serif; }
 
-/* ===== Title ===== */
 .main-title{
   font-size: 40px !important;
   font-weight: 800 !important;
   color: #0F4237 !important;
   text-align: center;
-  margin-top: 6px;
+  margin-top: -6px;
   margin-bottom: 8px;
   text-shadow: 0 1px 0 rgba(255,255,255,0.7);
 }
-
-/* Section title */
 .subheader, .section-title {
   font-size: 26px !important;
   font-weight: 700 !important;
@@ -102,6 +81,14 @@ div.stButton > button:hover {
   display: flex; align-items: center; justify-content: center; color: #6b7b83;
   background: #f8faf9; margin-top: 10px;
 }
+
+/* Top-right logo container (keeps the image above/right of title) */
+.header-row { display: grid; grid-template-columns: 1fr auto; align-items: start; }
+.header-logo { margin-top: -10px; max-width: 140px; }
+@media (max-width: 600px){
+  .header-row { grid-template-columns: 1fr; }
+  .header-logo { margin: 0 auto 6px; }
+}
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
 """, unsafe_allow_html=True)
@@ -119,8 +106,18 @@ if "selected_state" not in st.session_state:
     st.session_state.selected_state = None
 
 # ----------------------------
-# Header (title only) + simple navigation row
+# Header (logo + title + navigation row)
 # ----------------------------
+# Top-right logo slightly above the title
+hdr_left, hdr_right = st.columns([6, 1])
+with hdr_left:
+    st.markdown("<div class='header-row'></div>", unsafe_allow_html=True)
+with hdr_right:
+    try:
+        st.image("12th_year_anniversary_logo_transparent.png", use_container_width=True, caption=None)
+    except Exception:
+        pass  # if the file is missing, don't error
+
 st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
 
 nav1, nav2, nav3 = st.columns(3)
@@ -173,14 +170,19 @@ except Exception as e:
     milestones_df = pd.DataFrame()
     st.error(f"Could not load 'Milestones in RE projects.xlsx' — {e}")
 
+def random_date(start: datetime, end: datetime) -> datetime:
+    delta = end - start
+    return start + timedelta(days=random.randint(0, max(1, delta.days)))
+
 @st.cache_data
 def generate_projects(n=900, mdf: pd.DataFrame = None):
     developers = ["Adani Green", "ReNew Power", "Tata Power", "Azure", "NTPC RE"]
-    # Five demo states; add more if you like (and update STATE_CENTROIDS below)
     states = ["Rajasthan", "Gujarat", "Maharashtra", "Karnataka", "Tamil Nadu"]
     if mdf is None or mdf.empty:
         return pd.DataFrame()
     valid_rows = mdf[mdf["Milestone"].notna() & (mdf["Milestone"].str.len() > 0)]
+    start_window = datetime.now() - timedelta(days=730)
+    end_window = datetime.now()
     projects = []
     for i in range(1, n+1):
         row = valid_rows.sample(1).iloc[0]
@@ -192,14 +194,14 @@ def generate_projects(n=900, mdf: pd.DataFrame = None):
             "State": random.choice(states),
             "Checkpoint": row["Checkpoint"],
             "Milestone": row["Milestone"],
-            "Status": random.choice(["Not Started", "In Progress", "Completed"])
+            "Milestone_Start_Date": random_date(start_window, end_window).date()
         })
     return pd.DataFrame(projects)
 
 projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
 
 # ----------------------------
-# Folium bubble map (no external files)
+# India bubble map
 # ----------------------------
 STATE_CENTROIDS = {
     "Rajasthan":  (27.0238, 74.2179),
@@ -220,25 +222,18 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 def render_state_bubble_map(df: pd.DataFrame):
     st.markdown("<h2 class='section-title'>India — Projects by State</h2>", unsafe_allow_html=True)
     if df.empty:
-        st.info("No data to map yet.")
         return
-
-    # Aggregate per state
     agg = df.groupby("State", as_index=False).agg(
         Projects=("Project_ID", "count"),
         Capacity_MW=("Capacity_MW", "sum"),
     )
-
-    # Build map
     m = folium.Map(location=[22.97, 78.65], zoom_start=5, tiles="cartodbpositron")
-
-    max_projects = max(agg["Projects"]) if not agg.empty else 1
+    max_cap = max(agg["Capacity_MW"]) if not agg.empty else 1
     for state, (lat, lon) in STATE_CENTROIDS.items():
         row = agg[agg["State"] == state]
         projects = int(row["Projects"].iloc[0]) if not row.empty else 0
         capacity = int(row["Capacity_MW"].iloc[0]) if not row.empty else 0
-        radius = 15 + (projects / max_projects) * 35 if max_projects > 0 else 15
-
+        radius = 12 + (capacity / max_cap) * 38 if max_cap > 0 else 12
         popup_html = f"<b>{state}</b><br>Projects: {projects}<br>Capacity: {capacity} MW"
         folium.CircleMarker(
             location=(lat, lon),
@@ -247,64 +242,58 @@ def render_state_bubble_map(df: pd.DataFrame):
             fill=True,
             fill_color="#1E6A54",
             fill_opacity=0.65,
-            tooltip=f"{state} — {projects} projects",
+            tooltip=f"{state} — {capacity} MW",
             popup=folium.Popup(popup_html, max_width=260)
         ).add_to(m)
-
     out = st_folium(m, width=None, height=520)
-    # Detect click near a centroid to select a state
     if out and "last_object_clicked" in out and out["last_object_clicked"]:
         lat = out["last_object_clicked"]["lat"]
         lon = out["last_object_clicked"]["lng"]
-        nearest_state = None
-        nearest_dist = 9999
-        for state, (slat, slon) in STATE_CENTROIDS.items():
+        nearest_state, nearest_dist = None, 9999
+        for s, (slat, slon) in STATE_CENTROIDS.items():
             d = haversine_distance(lat, lon, slat, slon)
             if d < nearest_dist:
-                nearest_dist = d
-                nearest_state = state
-        # If click within ~150km of a centroid, treat it as a state selection
+                nearest_state, nearest_dist = s, d
         if nearest_state and nearest_dist < 150:
             st.session_state.selected_state = nearest_state
-
-    # Show label for selected state
     if st.session_state.selected_state:
         sel = st.session_state.selected_state
         row = agg[agg["State"] == sel]
         total_p = int(row["Projects"].iloc[0]) if not row.empty else 0
         total_c = int(row["Capacity_MW"].iloc[0]) if not row.empty else 0
         st.success(f"📍 **{sel}** — Projects: **{total_p}**, Capacity: **{total_c} MW**")
-    else:
-        st.info("Tip: Click a state bubble to filter charts below.")
 
 # ----------------------------
-# Plotly dashboard (interactive)
+# Plotly dashboard (charts)
 # ----------------------------
 def render_dashboard(df: pd.DataFrame, title: str):
     st.markdown(f"<h2 class='section-title'>{title}</h2>", unsafe_allow_html=True)
     if df.empty:
-        st.info("No data to visualize yet.")
         return
-
-    status_counts = df["Status"].value_counts().reset_index()
-    status_counts.columns = ["Status", "Projects"]
-    st.plotly_chart(px.bar(status_counts, x="Status", y="Projects", title="Status distribution"), use_container_width=True)
-
+    share_state = df["State"].value_counts().reset_index()
+    share_state.columns = ["State", "Projects"]
+    fig1 = px.pie(share_state, names="State", values="Projects", hole=0.45, title="Projects share by state")
+    st.plotly_chart(fig1, use_container_width=True)
     cap_by_state = df.groupby("State", as_index=False)["Capacity_MW"].sum().sort_values("Capacity_MW", ascending=False)
-    st.plotly_chart(px.bar(cap_by_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)"), use_container_width=True)
-
-    dev_counts = df["Developer"].value_counts().reset_index()
-    dev_counts.columns = ["Developer", "Projects"]
-    fig3 = px.bar(dev_counts.head(10), x="Projects", y="Developer", orientation="h", title="Projects by developer (top)")
-    fig3.update_layout(yaxis={"categoryorder":"total ascending"})
+    fig2 = px.bar(cap_by_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)")
+    st.plotly_chart(fig2, use_container_width=True)
+    ts = df.copy()
+    ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
+    ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count()
+    ts_agg.rename(columns={"Project_ID":"Projects"}, inplace=True)
+    fig3 = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (monthly)")
     st.plotly_chart(fig3, use_container_width=True)
-
+    fig4 = px.scatter(df, x="Milestone_Start_Date", y="Capacity_MW",
+                      color="State", hover_data=["Project_ID", "Milestone", "Checkpoint"],
+                      title="Capacity vs milestone date by state")
+    st.plotly_chart(fig4, use_container_width=True)
     ms_counts = df["Milestone"].value_counts().reset_index()
     ms_counts.columns = ["Milestone", "Projects"]
-    st.plotly_chart(px.bar(ms_counts, x="Milestone", y="Projects", title="Projects by milestone"), use_container_width=True)
+    fig5 = px.bar(ms_counts, x="Milestone", y="Projects", title="Projects by milestone")
+    st.plotly_chart(fig5, use_container_width=True)
 
 # ----------------------------
-# Enhanced Contact
+# Enhanced Contact (with FAQ)
 # ----------------------------
 def render_contact_enhanced():
     st.markdown("<h1 class='main-title'>Contact Us</h1>", unsafe_allow_html=True)
@@ -328,6 +317,17 @@ def render_contact_enhanced():
                     st.success("✅ Thanks! We’ll be in touch shortly.")
                 else:
                     st.error("Please fill in name, email, and message.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div class="card" style="margin-top:14px;">', unsafe_allow_html=True)
+        st.markdown("### FAQ")
+        with st.expander("How do I register a new project?"):
+            st.write("Go to **Register Your Project**, fill out the form (including **NSWS ID**), and upload supporting documents.")
+        with st.expander("Who can update project details?"):
+            st.write("Authorized developers can log in and edit only their projects. Admins can review submissions.")
+        with st.expander("What files are accepted as supporting documents?"):
+            st.write("PDF, DOCX, and XLSX currently.")
+        with st.expander("How are project milestones updated?"):
+            st.write("Developers can update milestone progress after logging in; changes are tracked with date stamps.")
         st.markdown('</div>', unsafe_allow_html=True)
     with right:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -377,10 +377,10 @@ if st.session_state.page == "Home":
             else:
                 st.info("⚠️ No milestones defined for this checkpoint in the Excel.")
 
-        # 3) India map directly under checkpoints
+        # 3) India map (bubble)
         render_state_bubble_map(projects_df)
 
-        # 4) Projects table when a milestone is selected
+        # 4) Filtered dataset + Projects table (with Milestone Start Date; no status)
         current_df = projects_df.copy()
         dash_title = "Portfolio overview"
 
@@ -393,13 +393,16 @@ if st.session_state.page == "Home":
             dash_title = f"Dashboard — {st.session_state.selected_milestone}"
             st.markdown(f"<h2 class='subheader'>Projects at milestone: {st.session_state.selected_milestone}</h2>", unsafe_allow_html=True)
             st.metric("Total Projects", len(current_df))
-            st.dataframe(current_df.reset_index(drop=True))
+            st.dataframe(
+                current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
+                .reset_index(drop=True)
+            )
 
         if st.session_state.get("selected_state"):
             current_df = current_df[current_df["State"] == st.session_state.selected_state]
             dash_title += f" — {st.session_state.selected_state}"
 
-        # 5) Interactive charts below (filtered by selections)
+        # 5) Mixed charts
         render_dashboard(current_df, dash_title)
 
 elif st.session_state.page == "Register":
@@ -430,12 +433,16 @@ elif st.session_state.page == "Register":
     with st.form("project_form"):
         project_name = st.text_input("Project Name")
         developer = st.text_input("Developer Name")
+        nsws_id = st.text_input("NSWS ID")
         capacity = st.number_input("Capacity (MW)", min_value=10, max_value=1000, step=10)
         state = st.text_input("State")
         upload = st.file_uploader("Upload Supporting Documents", type=["pdf", "docx", "xlsx"])
         submit = st.form_submit_button("Register Project")
         if submit:
-            st.success(f"✅ Project '{project_name}' registered successfully!")
+            if project_name and developer and state and nsws_id:
+                st.success(f"✅ Project '{project_name}' (NSWS ID: {nsws_id}) registered successfully!")
+            else:
+                st.error("Please fill Project Name, Developer, State, and NSWS ID.")
 
 elif st.session_state.page == "Contact":
     render_contact_enhanced()
