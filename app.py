@@ -1,4 +1,5 @@
 # app.py
+import base64
 import streamlit as st
 import pandas as pd
 import random
@@ -6,10 +7,11 @@ import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Interactive viz
+# Viz
 import plotly.express as px
 from streamlit_folium import st_folium
 import folium
+import streamlit.components.v1 as components
 
 # ----------------------------
 # Page Config
@@ -20,7 +22,7 @@ st.set_page_config(
 )
 
 # ----------------------------
-# Global Styles
+# Global Styles (soft gradient + card look)
 # ----------------------------
 st.markdown("""
 <style>
@@ -32,6 +34,7 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .stApp { font-family: 'Poppins', sans-serif; }
 
+/* Title */
 .main-title{
   font-size: 40px !important;
   font-weight: 800 !important;
@@ -42,6 +45,7 @@ html, body, [data-testid="stAppViewContainer"] {
   text-shadow: 0 1px 0 rgba(255,255,255,0.7);
 }
 
+/* Section headings */
 .subheader, .section-title {
   font-size: 26px !important;
   font-weight: 700 !important;
@@ -51,6 +55,7 @@ html, body, [data-testid="stAppViewContainer"] {
   text-align: center;
 }
 
+/* Buttons used as cards */
 div.stButton > button {
   border-radius: 16px !important;
   font-size: 16px !important;
@@ -73,12 +78,19 @@ div.stButton > button:hover {
   transform: translateY(-1px);
 }
 
+/* KPI/Panel cards */
 .card {
   border-radius: 16px;
-  padding: 18px;
-  background: #ffffff;
-  border: 1px solid #e8ecef;
+  padding: 16px 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f9fcfa 100%);
+  border: 1px solid #e5ece8;
   box-shadow: 0 10px 22px rgba(16,40,32,0.06);
+}
+.kpi-value{
+  font-size: 32px; font-weight: 800; color:#0F4237; line-height:1.1; margin-top:6px;
+}
+.kpi-label{
+  font-size: 12px; font-weight: 600; color:#2f6a57; text-transform: uppercase; letter-spacing:.5px;
 }
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
@@ -95,7 +107,7 @@ if "selected_milestone" not in st.session_state:
     st.session_state.selected_milestone = None
 
 # ----------------------------
-# Robust logo finder
+# Logo finder + HTML tag helper (force same height)
 # ----------------------------
 def find_logo(possible_names):
     cwd = Path(".").resolve()
@@ -111,25 +123,60 @@ def find_logo(possible_names):
                         return str(child)
     return None
 
+def img_tag(path: str, height_px: int = 72, alt: str = "") -> str:
+    try:
+        b64 = base64.b64encode(Path(path).read_bytes()).decode("utf-8")
+        ext = Path(path).suffix.lower()
+        mime = "image/png" if ext in [".png"] else ("image/jpeg" if ext in [".jpg", ".jpeg"] else "image/png")
+        return f"<img alt='{alt}' src='data:{mime};base64,{b64}' style='height:{height_px}px; vertical-align:middle; display:block;'/>"
+    except Exception:
+        return ""
+
 MNRE_LOGO = find_logo(["MNRE.png", "mnre.png", "MNRE.PNG"])
 NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
                         "12th_year_anniversary_logo_transparent.PNG"])
 
 # ----------------------------
-# Header (MNRE • Title • NSEFI)
+# Top live Date/Time bar (single line, IST)
+# ----------------------------
+components.html("""
+  <div style="font-family:Poppins,system-ui,Arial; display:flex; align-items:center; gap:28px;
+              padding:4px 2px; font-weight:700; color:#0F4237; font-size:14px;">
+    <span id="live-date"></span><span style="opacity:.5">|</span><span id="live-time"></span>
+  </div>
+  <script>
+    (function(){
+      function render(){
+        const now = new Date();
+        const opts = { timeZone:'Asia/Kolkata', year:'numeric', month:'long', day:'2-digit',
+                       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false };
+        const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(now)
+                      .reduce((a,p)=>{a[p.type]=p.value; return a;}, {});
+        const day = parts.day; const month = (parts.month||'').toLowerCase(); const year = parts.year;
+        const time = `${parts.hour}:${parts.minute}:${parts.second} IST`;
+        document.getElementById('live-date').textContent = `${day} - ${month} - ${year}`;
+        document.getElementById('live-time').textContent = time;
+      }
+      render(); setInterval(render, 1000);
+    })();
+  </script>
+""", height=34)
+
+# ----------------------------
+# Header row: MNRE (left) • Title • NSEFI (right)
 # ----------------------------
 left, mid, right = st.columns([1,6,1])
 with left:
     if MNRE_LOGO:
-        st.image(MNRE_LOGO, width=120)
+        st.markdown(img_tag(MNRE_LOGO, height_px=72, alt="MNRE"), unsafe_allow_html=True)
 with mid:
     st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
 with right:
     if NSEFI_LOGO:
-        st.image(NSEFI_LOGO, width=140)
+        st.markdown(img_tag(NSEFI_LOGO, height_px=72, alt="NSEFI"), unsafe_allow_html=True)
 
 # ----------------------------
-# Load milestones (dynamic) + Dummy projects
+# Load milestones dynamically + Dummy projects
 # ----------------------------
 FILE_PATH = "Milestones in RE projects.xlsx"
 FILE_MTIME = Path(FILE_PATH).stat().st_mtime if Path(FILE_PATH).exists() else 0
@@ -139,15 +186,18 @@ def load_milestones_clean(file_path: str, file_mtime: float):
     df = pd.read_excel(file_path, sheet_name="Sheet1")
     df = df.rename(columns={"Step No": "Step_No", "Checkpoints": "Checkpoint", "Milestones": "Milestone"})
     df = df.dropna(how="all")
+
     for c in ["Checkpoint", "Milestone"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
+
     df["Checkpoint"] = df["Checkpoint"].replace({"nan": pd.NA}).ffill()
 
-    # Fill blank milestone directly under LOA row
+    # If the LOA row has blank milestone, name it
     is_loa_cp = df["Checkpoint"] == "Issuance of LOA (Project Allocation) / LOI"
     df.loc[is_loa_cp & (df["Milestone"].isna() | (df["Milestone"].str.len()==0) | (df["Milestone"].str.lower()=="nan")), "Milestone"] = "LoA"
 
+    # Remove empties
     df = df[~df["Milestone"].isna()]
     df = df[df["Milestone"].str.len() > 0]
     df = df[df["Milestone"].str.lower() != "nan"]
@@ -161,7 +211,7 @@ if Path(FILE_PATH).exists():
 else:
     milestones_df = pd.DataFrame()
 
-# Build checkpoint order dynamically
+# Dynamic checkpoint order
 if not milestones_df.empty:
     cp_order_df = (
         milestones_df[["Step_No", "Checkpoint"]]
@@ -206,7 +256,7 @@ def generate_projects(n=900, mdf: pd.DataFrame = None):
 projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
 
 # ----------------------------
-# Checkpoints in one horizontal line (numbered 1..N)
+# Checkpoints row (single line, numbered 1..N)
 # ----------------------------
 def render_checkpoints_row():
     st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
@@ -256,7 +306,7 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
             j += 1
 
 # ----------------------------
-# India map (capacity bubbles)
+# India Map (capacity bubbles)
 # ----------------------------
 STATE_CENTROIDS = {
     "Rajasthan":  (27.0238, 74.2179),
@@ -286,10 +336,9 @@ def render_state_bubble_map(df: pd.DataFrame):
     max_cap = max(agg["Capacity_MW"]) if not agg.empty else 1
     for state, (lat, lon) in STATE_CENTROIDS.items():
         row = agg[agg["State"] == state]
-        projects = int(row["Projects"].iloc[0]) if not row.empty else 0
         capacity = int(row["Capacity_MW"].iloc[0]) if not row.empty else 0
         radius = 12 + (capacity / max_cap) * 38 if max_cap > 0 else 12
-        popup_html = f"<b>{state}</b><br>Projects: {projects}<br>Capacity: {capacity} MW"
+        popup_html = f"<b>{state}</b><br>Capacity: {capacity} MW"
         folium.CircleMarker(
             location=(lat, lon),
             radius=radius,
@@ -300,80 +349,111 @@ def render_state_bubble_map(df: pd.DataFrame):
             tooltip=f"{state} — {capacity} MW",
             popup=folium.Popup(popup_html, max_width=260)
         ).add_to(m)
-    out = st_folium(m, width=None, height=520)
-    if out and "last_object_clicked" in out and out["last_object_clicked"]:
-        lat = out["last_object_clicked"]["lat"]
-        lon = out["last_object_clicked"]["lng"]
-        nearest_state, nearest_dist = None, 9999
-        for s, (slat, slon) in STATE_CENTROIDS.items():
-            d = haversine_distance(lat, lon, slat, slon)
-            if d < nearest_dist:
-                nearest_state, nearest_dist = s, d
-        if nearest_state and nearest_dist < 150:
-            st.session_state.selected_state = nearest_state
-    # (Removed success/info banners to keep map area clean)
+    st_folium(m, width=None, height=520)
 
 # ----------------------------
-# Charts & Table
+# KPI Cards + Chart Grid (Tableau-style layout)
 # ----------------------------
-def render_dashboard(df: pd.DataFrame, title: str):
-    st.markdown(f"<h2 class='section-title'>{title}</h2>", unsafe_allow_html=True)
+def render_kpis(df: pd.DataFrame):
+    total_projects = len(df)
+    total_capacity = int(df["Capacity_MW"].sum()) if not df.empty else 0
+    avg_capacity = round(df["Capacity_MW"].mean(), 2) if not df.empty else 0
+    unique_checkpoints = df["Checkpoint"].nunique() if not df.empty else 0
+    unique_milestones = df["Milestone"].nunique() if not df.empty else 0
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    for c, label, value in [
+        (c1, "Total Projects", f"{total_projects:,}"),
+        (c2, "Total Capacity (MW)", f"{total_capacity:,}"),
+        (c3, "Avg Capacity / Project", f"{avg_capacity}"),
+        (c4, "Active Checkpoints", f"{unique_checkpoints}"),
+        (c5, "Active Milestones", f"{unique_milestones}"),
+    ]:
+        with c:
+            st.markdown(f"<div class='card'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>", unsafe_allow_html=True)
+
+def render_dashboard_template(df: pd.DataFrame):
     if df.empty:
         return
 
-    share_state = df["State"].value_counts().reset_index()
-    share_state.columns = ["State", "Projects"]
-    fig1 = px.pie(share_state, names="State", values="Projects", hole=0.45, title="Projects share by state")
-    st.plotly_chart(fig1, use_container_width=True)
+    st.markdown("<h2 class='section-title'>Portfolio Dashboard</h2>", unsafe_allow_html=True)
 
-    cap_by_state = df.groupby("State", as_index=False)["Capacity_MW"].sum().sort_values("Capacity_MW", ascending=False)
-    fig2 = px.bar(cap_by_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)")
-    st.plotly_chart(fig2, use_container_width=True)
+    # --- KPIs like the mortgage/weather boards ---
+    render_kpis(df)
 
-    ts = df.copy()
-    ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
-    ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count().rename(columns={"Project_ID":"Projects"})
-    fig3 = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (monthly)")
-    st.plotly_chart(fig3, use_container_width=True)
+    # --- Grid: 2x2, inspired by your WEO/loan templates ---
+    t1c1, t1c2 = st.columns(2)
+    with t1c1:
+        # Trend over time (line with markers)
+        ts = df.copy()
+        ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
+        ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count().rename(columns={"Project_ID":"Projects"})
+        fig = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (Monthly)")
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig, use_container_width=True)
+    with t1c2:
+        # Projects by Developer (bar)
+        dev_counts = df["Developer"].value_counts().reset_index()
+        dev_counts.columns = ["Developer", "Projects"]
+        fig = px.bar(dev_counts, x="Developer", y="Projects", title="Projects by developer")
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig, use_container_width=True)
 
-    fig4 = px.scatter(df, x="Milestone_Start_Date", y="Capacity_MW",
-                      color="State", hover_data=["Project_ID", "Milestone", "Checkpoint"],
-                      title="Capacity vs milestone date by state")
-    st.plotly_chart(fig4, use_container_width=True)
-
-    ms_counts = df["Milestone"].value_counts().reset_index()
-    ms_counts.columns = ["Milestone", "Projects"]
-    fig5 = px.bar(ms_counts, x="Milestone", y="Projects", title="Projects by milestone")
-    st.plotly_chart(fig5, use_container_width=True)
+    b1c1, b1c2 = st.columns(2)
+    with b1c1:
+        # Capacity by State (bar)
+        cap_state = df.groupby("State", as_index=False)["Capacity_MW"].sum().sort_values("Capacity_MW", ascending=False)
+        fig = px.bar(cap_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)")
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig, use_container_width=True)
+    with b1c2:
+        # Donut share by state
+        share = df["State"].value_counts().reset_index()
+        share.columns = ["State", "Projects"]
+        fig = px.pie(share, names="State", values="Projects", hole=0.45, title="Projects share by state")
+        fig.update_layout(margin=dict(l=0,r=0,t=40,b=0))
+        st.plotly_chart(fig, use_container_width=True)
 
 # ----------------------------
-# ---- PAGE RENDER ----
+# ---- PAGE CONTENT ----
 # ----------------------------
-if milestones_df.empty or projects_df.empty or not CHECKPOINT_ORDER:
-    # Keep silent instead of showing info banners
-    pass
-else:
-    render_checkpoints_row()
+if not milestones_df.empty and not projects_df.empty and CHECKPOINT_ORDER:
+    # 1) Checkpoints single line
+    st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
+    cps = CHECKPOINT_ORDER
+    cols = st.columns(len(cps))
+    for i, cp in enumerate(cps, start=1):
+        count = int(projects_df[projects_df["Checkpoint"] == cp].shape[0])
+        label = f"{i}. {cp}\n{count} projects"
+        with cols[i-1]:
+            if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
+                if st.session_state.selected_checkpoint == cp:
+                    st.session_state.selected_checkpoint = None
+                    st.session_state.selected_milestone = None
+                else:
+                    st.session_state.selected_checkpoint = cp
+                    st.session_state.selected_milestone = None
 
+    # 2) Milestones grid (toggle) under selected checkpoint
     if st.session_state.selected_checkpoint:
         render_milestones_grid(st.session_state.selected_checkpoint, cols_per_row=4)
 
+    # 3) India map
     render_state_bubble_map(projects_df)
 
+    # 4) Filtered dataset for the dashboard below the map
     current_df = projects_df.copy()
-    dash_title = "Portfolio overview"
     if st.session_state.get("selected_checkpoint"):
         current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
-        dash_title = f"Dashboard — {st.session_state.selected_checkpoint}"
     if st.session_state.get("selected_milestone"):
         current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
-        dash_title = f"Dashboard — {st.session_state.selected_milestone}"
+
+    # (Optional) show the table when a milestone is selected
+    if st.session_state.get("selected_milestone"):
         st.dataframe(
             current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
             .reset_index(drop=True)
         )
-    if st.session_state.get("selected_state"):
-        current_df = current_df[current_df["State"] == st.session_state.selected_state]
-        dash_title += f" — {st.session_state.selected_state}"
 
-    render_dashboard(current_df, dash_title)
+    # 5) Tableau-style chart dashboard
+    render_dashboard_template(current_df)
