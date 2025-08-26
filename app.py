@@ -32,7 +32,6 @@ html, body, [data-testid="stAppViewContainer"] {
 }
 .stApp { font-family: 'Poppins', sans-serif; }
 
-/* Title */
 .main-title{
   font-size: 40px !important;
   font-weight: 800 !important;
@@ -43,7 +42,6 @@ html, body, [data-testid="stAppViewContainer"] {
   text-shadow: 0 1px 0 rgba(255,255,255,0.7);
 }
 
-/* Section headings */
 .subheader, .section-title {
   font-size: 26px !important;
   font-weight: 700 !important;
@@ -53,7 +51,6 @@ html, body, [data-testid="stAppViewContainer"] {
   text-align: center;
 }
 
-/* Big cards as buttons (text wraps nicely) */
 div.stButton > button {
   border-radius: 16px !important;
   font-size: 16px !important;
@@ -76,7 +73,6 @@ div.stButton > button:hover {
   transform: translateY(-1px);
 }
 
-/* Simple card (container style) */
 .card {
   border-radius: 16px;
   padding: 18px;
@@ -99,7 +95,7 @@ if "selected_milestone" not in st.session_state:
     st.session_state.selected_milestone = None
 
 # ----------------------------
-# Robust logo finder (handles case/path differences)
+# Robust logo finder
 # ----------------------------
 def find_logo(possible_names):
     cwd = Path(".").resolve()
@@ -120,67 +116,52 @@ NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
                         "12th_year_anniversary_logo_transparent.PNG"])
 
 # ----------------------------
-# Header row (MNRE left • Title center • NSEFI right)
+# Header (MNRE • Title • NSEFI)
 # ----------------------------
-top_left, top_mid, top_right = st.columns([1, 6, 1])
-with top_left:
+left, mid, right = st.columns([1,6,1])
+with left:
     if MNRE_LOGO:
         st.image(MNRE_LOGO, width=120)
-    else:
-        st.caption(" ")
-with top_mid:
+with mid:
     st.markdown("<h1 class='main-title'>Real Time Project Milestone Monitoring Dashboard</h1>", unsafe_allow_html=True)
-with top_right:
+with right:
     if NSEFI_LOGO:
         st.image(NSEFI_LOGO, width=140)
-    else:
-        st.caption(" ")
 
 # ----------------------------
-# Data: Milestones (dynamic) + Dummy Projects
+# Load milestones (dynamic) + Dummy projects
 # ----------------------------
 FILE_PATH = "Milestones in RE projects.xlsx"
 FILE_MTIME = Path(FILE_PATH).stat().st_mtime if Path(FILE_PATH).exists() else 0
 
 @st.cache_data
 def load_milestones_clean(file_path: str, file_mtime: float):
-    """Load and clean milestones; cache invalidates when file mtime changes."""
     df = pd.read_excel(file_path, sheet_name="Sheet1")
     df = df.rename(columns={"Step No": "Step_No", "Checkpoints": "Checkpoint", "Milestones": "Milestone"})
     df = df.dropna(how="all")
-
-    # Trim & clean
     for c in ["Checkpoint", "Milestone"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
     df["Checkpoint"] = df["Checkpoint"].replace({"nan": pd.NA}).ffill()
 
-    # Fill blank milestone under LOA row as "LoA" (common pattern)
+    # Fill blank milestone directly under LOA row
     is_loa_cp = df["Checkpoint"] == "Issuance of LOA (Project Allocation) / LOI"
     df.loc[is_loa_cp & (df["Milestone"].isna() | (df["Milestone"].str.len()==0) | (df["Milestone"].str.lower()=="nan")), "Milestone"] = "LoA"
 
-    # Remove empties
     df = df[~df["Milestone"].isna()]
     df = df[df["Milestone"].str.len() > 0]
     df = df[df["Milestone"].str.lower() != "nan"]
 
-    # Sort by step if available
     if "Step_No" in df.columns:
         df = df.sort_values("Step_No")
-
     return df.reset_index(drop=True)
 
 if Path(FILE_PATH).exists():
-    try:
-        milestones_df = load_milestones_clean(FILE_PATH, FILE_MTIME)
-    except Exception as e:
-        milestones_df = pd.DataFrame()
-        st.error(f"Could not load '{FILE_PATH}' — {e}")
+    milestones_df = load_milestones_clean(FILE_PATH, FILE_MTIME)
 else:
     milestones_df = pd.DataFrame()
-    st.warning(f"'{FILE_PATH}' not found in the app folder.")
 
-# Build CHECKPOINT_ORDER dynamically from Excel (first occurrence order by Step_No)
+# Build checkpoint order dynamically
 if not milestones_df.empty:
     cp_order_df = (
         milestones_df[["Step_No", "Checkpoint"]]
@@ -224,15 +205,8 @@ def generate_projects(n=900, mdf: pd.DataFrame = None):
 
 projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
 
-# Optional: quick cache-buster while iterating
-cols_reload = st.columns([1,6,1])
-with cols_reload[0]:
-    if st.button("🔄 Force reload milestones"):
-        st.cache_data.clear()
-        st.rerun()
-
 # ----------------------------
-# Checkpoints row (single line, numbered 1..N)
+# Checkpoints in one horizontal line (numbered 1..N)
 # ----------------------------
 def render_checkpoints_row():
     st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
@@ -245,7 +219,6 @@ def render_checkpoints_row():
         label = f"{i}. {cp}\n{count} projects"
         with cols[i-1]:
             if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
-                # Toggle: clicking same cp collapses milestones
                 if st.session_state.selected_checkpoint == cp:
                     st.session_state.selected_checkpoint = None
                     st.session_state.selected_milestone = None
@@ -254,7 +227,7 @@ def render_checkpoints_row():
                     st.session_state.selected_milestone = None
 
 # ----------------------------
-# Milestones grid (horizontal wrapping; numbered X.1, X.2..., no arrows)
+# Milestones grid (wrap; numbered X.1, X.2...)
 # ----------------------------
 def render_milestones_grid(cp: str, cols_per_row: int = 4):
     if not cp:
@@ -266,7 +239,6 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
     )
     ms_unique = [m for m in ms_series.unique().tolist() if m]
     if not ms_unique:
-        st.info("⚠️ No milestones defined for this checkpoint in the Excel.")
         return
 
     st.markdown(f"<h2 class='section-title'>Milestones — {cp}</h2>", unsafe_allow_html=True)
@@ -280,12 +252,11 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
             label = f"{cp_index}.{j} {m}\n{m_count} projects"
             with cols[c_i]:
                 if st.button(label, key=f"ms_btn_{cp_index}_{j}", use_container_width=True):
-                    # Toggle: clicking same milestone unselects
                     st.session_state.selected_milestone = (None if st.session_state.selected_milestone == m else m)
             j += 1
 
 # ----------------------------
-# India bubble map (capacity-scaled)
+# India map (capacity bubbles)
 # ----------------------------
 STATE_CENTROIDS = {
     "Rajasthan":  (27.0238, 74.2179),
@@ -340,12 +311,7 @@ def render_state_bubble_map(df: pd.DataFrame):
                 nearest_state, nearest_dist = s, d
         if nearest_state and nearest_dist < 150:
             st.session_state.selected_state = nearest_state
-    if st.session_state.selected_state:
-        sel = st.session_state.selected_state
-        row = agg[agg["State"] == sel]
-        total_p = int(row["Projects"].iloc[0]) if not row.empty else 0
-        total_c = int(row["Capacity_MW"].iloc[0]) if not row.empty else 0
-        st.success(f"📍 **{sel}** — Projects: **{total_p}**, Capacity: **{total_c} MW**")
+    # (Removed success/info banners to keep map area clean)
 
 # ----------------------------
 # Charts & Table
@@ -355,31 +321,26 @@ def render_dashboard(df: pd.DataFrame, title: str):
     if df.empty:
         return
 
-    # Donut: Projects share by state
     share_state = df["State"].value_counts().reset_index()
     share_state.columns = ["State", "Projects"]
     fig1 = px.pie(share_state, names="State", values="Projects", hole=0.45, title="Projects share by state")
     st.plotly_chart(fig1, use_container_width=True)
 
-    # Bar: Capacity by state
     cap_by_state = df.groupby("State", as_index=False)["Capacity_MW"].sum().sort_values("Capacity_MW", ascending=False)
     fig2 = px.bar(cap_by_state, x="State", y="Capacity_MW", title="Total capacity by state (MW)")
     st.plotly_chart(fig2, use_container_width=True)
 
-    # Line: Projects over time (by milestone month)
     ts = df.copy()
     ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
     ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count().rename(columns={"Project_ID":"Projects"})
     fig3 = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects reaching milestones over time (monthly)")
     st.plotly_chart(fig3, use_container_width=True)
 
-    # Scatter: Capacity vs milestone date by state
     fig4 = px.scatter(df, x="Milestone_Start_Date", y="Capacity_MW",
                       color="State", hover_data=["Project_ID", "Milestone", "Checkpoint"],
                       title="Capacity vs milestone date by state")
     st.plotly_chart(fig4, use_container_width=True)
 
-    # Bar: Projects by milestone
     ms_counts = df["Milestone"].value_counts().reset_index()
     ms_counts.columns = ["Milestone", "Projects"]
     fig5 = px.bar(ms_counts, x="Milestone", y="Projects", title="Projects by milestone")
@@ -389,19 +350,16 @@ def render_dashboard(df: pd.DataFrame, title: str):
 # ---- PAGE RENDER ----
 # ----------------------------
 if milestones_df.empty or projects_df.empty or not CHECKPOINT_ORDER:
-    st.info("Add/update 'Milestones in RE projects.xlsx' (with Sheet1 & columns: Step No, Checkpoints, Milestones) to see checkpoints, milestones and projects.")
+    # Keep silent instead of showing info banners
+    pass
 else:
-    # 1) Checkpoints row (single line, numbered 1..N)
     render_checkpoints_row()
 
-    # 2) Milestones grid under the selected checkpoint (toggle)
     if st.session_state.selected_checkpoint:
         render_milestones_grid(st.session_state.selected_checkpoint, cols_per_row=4)
 
-    # 3) India map
     render_state_bubble_map(projects_df)
 
-    # 4) Table + Charts (filtered by selections)
     current_df = projects_df.copy()
     dash_title = "Portfolio overview"
     if st.session_state.get("selected_checkpoint"):
@@ -410,8 +368,6 @@ else:
     if st.session_state.get("selected_milestone"):
         current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
         dash_title = f"Dashboard — {st.session_state.selected_milestone}"
-        st.markdown(f"<h2 class='subheader'>Projects at milestone: {st.session_state.selected_milestone}</h2>", unsafe_allow_html=True)
-        st.metric("Total Projects", len(current_df))
         st.dataframe(
             current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
             .reset_index(drop=True)
@@ -419,4 +375,5 @@ else:
     if st.session_state.get("selected_state"):
         current_df = current_df[current_df["State"] == st.session_state.selected_state]
         dash_title += f" — {st.session_state.selected_state}"
+
     render_dashboard(current_df, dash_title)
