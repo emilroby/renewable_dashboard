@@ -602,3 +602,111 @@ else:
         st.info("Add 'Milestones in RE projects.xlsx' (Sheet1 with Step No / Checkpoints / Milestones).")
     if assigned_df.empty:
         st.info("Add the Quarterly Under-Construction Excel (we only read Sheet 3: 'Under Construction Projects').")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Activity logging (drop-in; paste this at the END of app.py)
+# ──────────────────────────────────────────────────────────────────────────────
+import os, io, uuid, logging, shutil
+from logging.handlers import TimedRotatingFileHandler
+from datetime import datetime
+
+# ---- 1) Configure a rotating text logger (one file per day) ------------------
+LOG_DIR = "logs"
+LOG_BASE = "activity.log"       # today's file will be logs/activity.log
+LOG_RETENTION_DAYS = 30         # keep last 30 daily logs
+
+os.makedirs(LOG_DIR, exist_ok=True)
+_logger = logging.getLogger("activity")
+_logger.setLevel(logging.INFO)
+_logger.propagate = False
+if not _logger.handlers:
+    h = TimedRotatingFileHandler(
+        filename=os.path.join(LOG_DIR, LOG_BASE),
+        when="midnight",
+        interval=1,
+        backupCount=LOG_RETENTION_DAYS,
+        encoding="utf-8",
+        utc=False,
+    )
+    # Simple TSV-style line: timestamp \t message
+    fmt = logging.Formatter("%(asctime)s\t%(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    h.setFormatter(fmt)
+    _logger.addHandler(h)
+
+# ---- 2) Per-session id -------------------------------------------------------
+if "_activity_session_id" not in st.session_state:
+    st.session_state._activity_session_id = uuid.uuid4().hex[:12]
+
+def _sid() -> str:
+    return st.session_state._activity_session_id
+
+# ---- 3) Public logger helpers you can call anywhere in your app --------------
+def log_event(event: str, **fields):
+    """
+    Log a single line like:
+    2025-08-27 12:34:56    session=abc123    event=filter_change    key=value ...
+    """
+    # Flatten fields to key=value (spaces replaced so it's grep-friendly)
+    kv = " ".join(f"{k}={str(v).replace('\\n',' ').replace('\\t',' ').strip()}" for k, v in fields.items())
+    _logger.info(f"session={_sid()} event={event} {kv}")
+
+def log_exception(context: str, err: Exception):
+    _logger.exception(f"session={_sid()} event=exception context={context} error={repr(err)}")
+
+def _current_log_path() -> str:
+    """Get today's active log file path."""
+    for h in _logger.handlers:
+        if isinstance(h, TimedRotatingFileHandler):
+            return h.baseFilename
+    return os.path.join(LOG_DIR, LOG_BASE)
+
+# ---- 4) Log session start once per user session ------------------------------
+if "_activity_started" not in st.session_state:
+    st.session_state._activity_started = True
+    # Feel free to add anything else you want to capture here
+    log_event("session_start", page="dashboard", app_version="v1")
+
+# ---- 5) Optional: small UI in the sidebar to fetch logs ----------------------
+with st.sidebar.expander("📜 Activity logs", expanded=False):
+    # Download today's log
+    try:
+        path = _current_log_path()
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                st.download_button(
+                    "Download today's log (.txt)",
+                    data=f.read(),
+                    file_name=os.path.basename(path),
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+        # Download a zip of ALL logs
+        if os.path.isdir(LOG_DIR) and len(os.listdir(LOG_DIR)) > 0:
+            zip_bytes = io.BytesIO()
+            with shutil.make_archive("logs_bundle", "zip", LOG_DIR) as _:
+                pass  # for older Python; below we re-open the created file
+            with open("logs_bundle.zip", "rb") as zf:
+                zip_bytes.write(zf.read())
+            zip_bytes.seek(0)
+            st.download_button(
+                "Download ALL logs (.zip)",
+                data=zip_bytes,
+                file_name=f"logs_{datetime.now().strftime('%Y%m%d_%H%M')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+            )
+            try:
+                os.remove("logs_bundle.zip")
+            except Exception:
+                pass
+    except Exception as e:
+        st.warning(f"Log download not available: {e}")
+
+# ---- 6) (Optional) examples of where to log user actions ---------------------
+# You can sprinkle these one-liners at important points in your code:
+#   log_event("checkpoint_click", checkpoint=st.session_state.get("selected_checkpoint"))
+#   log_event("milestone_click",  milestone=st.session_state.get("selected_milestone"))
+#   log_event("filter_change",    project_type=ft)   # where 'ft' is your filter selectbox value
+#   log_exception("render_snapshot", err)            # inside an except block
+# ──────────────────────────────────────────────────────────────────────────────
