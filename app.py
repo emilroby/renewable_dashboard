@@ -1,29 +1,32 @@
 # app.py
+# ──────────────────────────────────────────────────────────────────────────────
+# Real Time Project Milestone Monitoring Dashboard
+# Data sources:
+#   1) "Milestones in RE projects.xlsx" (Sheet1) → Checkpoints & Milestones
+#   2) "Quarterly_Report_on_Under_Construction_Renewable_Energy_Projects_as_on_June_2025.xlsx"
+#      (or the variant with two dots) — ONLY Sheet 3 "Under Construction Projects"
+#      → Under-construction projects; we temporarily assign them to checkpoints/milestones
+# ──────────────────────────────────────────────────────────────────────────────
+
+import re
 import base64
-import streamlit as st
-import pandas as pd
 import random
-import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Viz
-import plotly.express as px
-from streamlit_folium import st_folium
-import folium
+import pandas as pd
+import streamlit as st
 import streamlit.components.v1 as components
+import plotly.express as px
 
-# ---------------------------------
-# Page Config
-# ---------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# Page Config & Global Styles
+# ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Real Time Project Milestone Monitoring Dashboard",
     layout="wide"
 )
 
-# ---------------------------------
-# Global Styles
-# ---------------------------------
 st.markdown("""
 <style>
 html, body, [data-testid="stAppViewContainer"] {
@@ -49,8 +52,8 @@ html, body, [data-testid="stAppViewContainer"] {
   font-size: 26px !important;
   font-weight: 700 !important;
   color: #1b5e20 !important;
-  margin-top: 20px;
-  margin-bottom: 14px;
+  margin-top: 16px;
+  margin-bottom: 10px;
   text-align: center;
 }
 
@@ -86,28 +89,54 @@ div.stButton > button:hover {
   box-shadow: 0 10px 22px rgba(16,40,32,0.06);
 }
 .kpi-value{
-  font-size: 32px; font-weight: 800; color:#0F4237; line-height:1.1; margin-top:6px;
+  font-size: 28px; font-weight: 800; color:#0F4237; line-height:1.1; margin-top:6px;
 }
 .kpi-label{
   font-size: 12px; font-weight: 600; color:#2f6a57; text-transform: uppercase; letter-spacing:.5px;
 }
+
+/* Tighten plot paddings to reduce gaps */
+.js-plotly-plot .plotly .main-svg { background: rgba(0,0,0,0) !important; }
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
 """, unsafe_allow_html=True)
 
-# ---------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
 # Session state
-# ---------------------------------
-if "selected_state" not in st.session_state:
-    st.session_state.selected_state = None
-if "selected_checkpoint" not in st.session_state:
-    st.session_state.selected_checkpoint = None
-if "selected_milestone" not in st.session_state:
-    st.session_state.selected_milestone = None
+# ──────────────────────────────────────────────────────────────────────────────
+for k, v in {"selected_state": None, "selected_checkpoint": None, "selected_milestone": None}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# ---------------------------------
-# Logo finder + HTML tag helper
-# ---------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# TOP: Live Date/Time (extreme left)
+# ──────────────────────────────────────────────────────────────────────────────
+components.html("""
+  <div style="font-family:Poppins,system-ui,Arial; display:flex; align-items:center; gap:18px;
+              padding:2px 0 6px 2px; font-weight:700; color:#0F4237; font-size:14px; justify-content:flex-start;">
+    <span id="live-date"></span><span style="opacity:.5">|</span><span id="live-time"></span>
+  </div>
+  <script>
+    (function(){
+      function render(){
+        const now = new Date();
+        const opts = { timeZone:'Asia/Kolkata', year:'numeric', month:'long', day:'2-digit',
+                       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false };
+        const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(now)
+                      .reduce((a,p)=>{a[p.type]=p.value; return a;}, {});
+        const day = parts.day; const month = (parts.month||'').toLowerCase(); const year = parts.year;
+        const time = `${parts.hour}:${parts.minute}:${parts.second} IST`;
+        document.getElementById('live-date').textContent = `${day} - ${month} - ${year}`;
+        document.getElementById('live-time').textContent = time;
+      }
+      render(); setInterval(render, 1000);
+    })();
+  </script>
+""", height=30)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Logos + Title Row (inline)
+# ──────────────────────────────────────────────────────────────────────────────
 def find_logo(possible_names):
     cwd = Path(".").resolve()
     for p in [cwd] + [p for p in cwd.iterdir() if p.is_dir()]:
@@ -135,35 +164,6 @@ MNRE_LOGO = find_logo(["MNRE.png", "mnre.png", "MNRE.PNG"])
 NSEFI_LOGO = find_logo(["12th_year_anniversary_logo_transparent.png",
                         "12th_year_anniversary_logo_transparent.PNG"])
 
-# ---------------------------------
-# TOP: Live Date/Time (extreme left)
-# ---------------------------------
-components.html("""
-  <div style="font-family:Poppins,system-ui,Arial; display:flex; align-items:center; gap:18px;
-              padding:2px 0 6px 2px; font-weight:700; color:#0F4237; font-size:14px; justify-content:flex-start;">
-    <span id="live-date"></span><span style="opacity:.5">|</span><span id="live-time"></span>
-  </div>
-  <script>
-    (function(){
-      function render(){
-        const now = new Date();
-        const opts = { timeZone:'Asia/Kolkata', year:'numeric', month:'long', day:'2-digit',
-                       hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false };
-        const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(now)
-                      .reduce((a,p)=>{a[p.type]=p.value; return a;}, {});
-        const day = parts.day; const month = (parts.month||'').toLowerCase(); const year = parts.year;
-        const time = `${parts.hour}:${parts.minute}:${parts.second} IST`;
-        document.getElementById('live-date').textContent = `${day} - ${month} - ${year}`;
-        document.getElementById('live-time').textContent = time;
-      }
-      render(); setInterval(render, 1000);
-    })();
-  </script>
-""", height=30)
-
-# ---------------------------------
-# Logos + Title Row (inline)
-# ---------------------------------
 col1, col2, col3 = st.columns([1, 4, 1])
 with col1:
     if MNRE_LOGO:
@@ -174,84 +174,221 @@ with col3:
     if NSEFI_LOGO:
         st.markdown(img_tag(NSEFI_LOGO, height_px=65, alt="NSEFI"), unsafe_allow_html=True)
 
-# ---------------------------------
-# Load milestones dynamically + Dummy projects
-# ---------------------------------
-FILE_PATH = "Milestones in RE projects.xlsx"
-FILE_MTIME = Path(FILE_PATH).stat().st_mtime if Path(FILE_PATH).exists() else 0
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def pickcol(cols, *candidates):
+    cols = [str(c) for c in cols]
+    low = {c.lower().strip(): c for c in cols}
+    for cand in candidates:
+        k = str(cand).lower().strip()
+        if k in low:
+            return low[k]
+    for cand in candidates:
+        k = str(cand).lower().strip()
+        for c in cols:
+            if k in c.lower():
+                return c
+    return None
+
+def norm_text_series(s: pd.Series) -> pd.Series:
+    s = s.astype(str).str.strip()
+    s = s.replace({"nan": pd.NA, "None": pd.NA})
+    s = s.str.replace(r"\s+", " ", regex=True)
+    return s
+
+def norm_key(s: str) -> str:
+    if s is None or (isinstance(s, float) and pd.isna(s)):
+        return ""
+    s = str(s).lower().strip().replace("&","and")
+    s = re.sub(r"[^a-z ]", "", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def parse_mw(val):
+    if pd.isna(val):
+        return pd.NA
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val)
+    s = re.sub(r"[^\d.]", "", s.replace(",", ""))
+    try:
+        return float(s) if s else pd.NA
+    except Exception:
+        return pd.NA
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Milestones (Sheet1)
+# ──────────────────────────────────────────────────────────────────────────────
+MILES_FILE = "Milestones in RE projects.xlsx"
 
 @st.cache_data
-def load_milestones_clean(file_path: str, file_mtime: float):
+def load_milestones(file_path: str):
     df = pd.read_excel(file_path, sheet_name="Sheet1")
     df = df.rename(columns={"Step No": "Step_No", "Checkpoints": "Checkpoint", "Milestones": "Milestone"})
     df = df.dropna(how="all")
     for c in ["Checkpoint", "Milestone"]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
+        df[c] = df[c].astype(str).str.strip()
     df["Checkpoint"] = df["Checkpoint"].replace({"nan": pd.NA}).ffill()
     if "Step_No" in df.columns:
         df = df.sort_values("Step_No")
     return df.reset_index(drop=True)
 
-if Path(FILE_PATH).exists():
-    milestones_df = load_milestones_clean(FILE_PATH, FILE_MTIME)
+if Path(MILES_FILE).exists():
+    milestones_df = load_milestones(MILES_FILE)
 else:
     milestones_df = pd.DataFrame()
+    st.error("⚠️ Add 'Milestones in RE projects.xlsx' in the project root.")
 
-# Dynamic checkpoint order from Excel
 if not milestones_df.empty:
-    cp_order_df = (
-        milestones_df[["Step_No", "Checkpoint"]]
-        .dropna(subset=["Checkpoint"])
-        .drop_duplicates(subset=["Checkpoint"], keep="first")
-    )
-    if "Step_No" in cp_order_df.columns:
-        CHECKPOINT_ORDER = cp_order_df.sort_values("Step_No")["Checkpoint"].tolist()
-    else:
-        CHECKPOINT_ORDER = cp_order_df["Checkpoint"].tolist()
+    cp_order_df = (milestones_df[["Step_No","Checkpoint"]]
+                   .dropna(subset=["Checkpoint"])
+                   .drop_duplicates(subset=["Checkpoint"], keep="first"))
+    CHECKPOINT_ORDER = (cp_order_df.sort_values("Step_No")["Checkpoint"].tolist()
+                        if "Step_No" in cp_order_df.columns else cp_order_df["Checkpoint"].tolist())
+    # Make sure milestone lists have no NaN/empty values
+    CP_TO_MS = {cp: [m for m in milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"]
+                     .astype(str).str.strip().tolist() if str(m).strip().lower() != "nan"]
+                for cp in CHECKPOINT_ORDER}
 else:
-    CHECKPOINT_ORDER = []
+    CHECKPOINT_ORDER, CP_TO_MS = [], {}
 
-def random_date(start: datetime, end: datetime) -> datetime:
-    delta = end - start
-    return start + timedelta(days=random.randint(0, max(1, delta.days)))
+# ──────────────────────────────────────────────────────────────────────────────
+# Under-construction Excel — ONLY Sheet 3: “Under Construction Projects”
+# ──────────────────────────────────────────────────────────────────────────────
+UC_FILE_CANDIDATES = [
+    "Quarterly_Report_on_Under_Construction_Renewable_Energy_Projects_as_on_June_2025.xlsx",
+    "Quarterly_Report_on_Under_Construction_Renewable_Energy_Projects_as_on_June_2025..xlsx",
+]
+
+def find_uc_file():
+    for cand in UC_FILE_CANDIDATES:
+        if Path(cand).exists():
+            return cand
+    return None
+
+def read_uc_ucprojects_sheet(path: str):
+    xl = pd.ExcelFile(path)
+    wanted = None
+    for nm in xl.sheet_names:
+        if str(nm).strip().lower() == "under construction projects":
+            wanted = nm
+            break
+    if wanted is None:
+        raise ValueError("The workbook does not contain a sheet named 'Under Construction Projects'.")
+    df = xl.parse(wanted)
+    df.rename(columns=lambda x: str(x).strip().replace("\n"," ").replace("  "," "), inplace=True)
+    return df
+
+def normalize_project_type(v: str) -> str:
+    t = norm_key(v)
+    if any(k in t for k in ["hybrid","mix"]): return "Hybrid"
+    if any(k in t for k in ["wind"]):   return "Wind"
+    if any(k in t for k in ["solar","pv"]): return "Solar"
+    if any(k in t for k in ["hydro","hydel","psp","pumped"]): return "Hydro/PSP"
+    if any(k in t for k in ["battery","storage","bess"]): return "Storage"
+    return "Other"
+
+CPSU_TOKENS = [
+    "ntpc","nhpc","seci","nlc","sgel","sjvn","gail","iocl","ongc","bhel",
+    "pfc","rec","railway","indian oil","powergrid","pgcil","sail","coal india","cil"
+]
+
+def classify_owner(developer: str) -> str:
+    s = norm_key(developer)
+    return "CPSU" if any(tok in s for tok in CPSU_TOKENS) else "Private"
 
 @st.cache_data
-def generate_projects(n=900, mdf: pd.DataFrame = None):
-    developers = ["Adani Green", "ReNew Power", "Tata Power", "Azure", "NTPC RE"]
-    states = ["Rajasthan", "Gujarat", "Maharashtra", "Karnataka", "Tamil Nadu"]
-    if mdf is None or mdf.empty:
-        return pd.DataFrame()
-    valid_rows = mdf[mdf["Milestone"].notna() & (mdf["Milestone"].str.len() > 0)]
+def load_uc_clean(path: str):
+    raw = read_uc_ucprojects_sheet(path)
+
+    cols = [str(c) for c in raw.columns]
+    c_serial  = pickcol(cols, "S. No", "S No", "Sr. No", "Sl No", "Serial", "Sl. No.")
+    c_project = pickcol(cols, "Project Name","Project","Name")
+    c_state   = pickcol(cols, "State", "State/UT", "Location State")
+    c_dev     = pickcol(cols, "Developer","Implementing Agency","Agency","Owner","Developer Name")
+    c_type    = pickcol(cols, "Project Type","Type","Technology","Mode")
+    c_cap     = pickcol(cols, "Capacity (MW)","Capacity MW","Capacity in MW","Capacity")
+    c_cod     = pickcol(cols, "COD","Expected COD","Date of Commissioning","Start Date","Date")
+
+    df = pd.DataFrame()
+    df["Serial"]       = pd.to_numeric(raw[c_serial], errors="coerce") if c_serial else pd.NA
+    df["Project_Name"] = norm_text_series(raw[c_project]) if c_project else pd.NA
+    df["State"]        = norm_text_series(raw[c_state])   if c_state   else pd.NA
+    df["Developer"]    = norm_text_series(raw[c_dev])     if c_dev     else pd.NA
+    df["Project_Type"] = norm_text_series(raw[c_type])    if c_type    else pd.NA
+    df["Capacity_MW"]  = raw[c_cap].apply(parse_mw) if c_cap else pd.NA
+    df["Date"]         = pd.to_datetime(raw[c_cod], errors="coerce") if c_cod else pd.NaT
+
+    # Drop total/blank rows
+    mask_total = (df["Project_Name"].str.contains("total", case=False, na=False)) | \
+                 (df["State"].str.contains("total", case=False, na=False))
+    df = df[~mask_total]
+    df = df.dropna(how="all", subset=["Project_Name","State","Capacity_MW"])
+
+    # Normalizations / derived fields
+    df["Project_Type"] = df["Project_Type"].fillna("").apply(normalize_project_type)
+    df["Owner_Class"]  = df["Developer"].fillna("").apply(classify_owner)
+    df["Developer_norm"] = (df["Developer"].fillna("")
+                            .str.lower().str.strip().str.replace(r"\s+"," ", regex=True))
+
+    df["Project_Row"] = 1
+    return df.reset_index(drop=True)
+
+UC_FILE = find_uc_file()
+if UC_FILE:
+    try:
+        uc_df = load_uc_clean(UC_FILE)
+    except Exception as e:
+        uc_df = pd.DataFrame()
+        st.error(f"Could not load Under-Construction data: {e}")
+else:
+    uc_df = pd.DataFrame()
+    st.info("Add the Quarterly Under-Construction Excel (we only read Sheet 3: 'Under Construction Projects').")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Randomly assign checkpoints/milestones (temporary)
+# ──────────────────────────────────────────────────────────────────────────────
+def assign_random_process(df_uc: pd.DataFrame, checkpoints: list[str], cp_to_ms: dict):
+    if df_uc.empty or not checkpoints:
+        return df_uc
+    rng = random.Random(42)
+    ms_choices = {cp: ([m for m in ms if str(m).strip()] or ["General"]) for cp, ms in cp_to_ms.items()}
+    for cp in checkpoints:
+        ms_choices.setdefault(cp, ["General"])
     start_window = datetime.now() - timedelta(days=730)
-    end_window = datetime.now()
-    projects = []
-    for i in range(1, n+1):
-        row = valid_rows.sample(1).iloc[0]
-        projects.append({
-            "Project_ID": f"P{i:04d}",
-            "Project_Name": f"Project_{i}",
-            "Developer": random.choice(developers),
-            "Capacity_MW": random.choice([50, 100, 200, 500]),
-            "State": random.choice(states),
-            "Checkpoint": row["Checkpoint"],
-            "Milestone": row["Milestone"],
-            "Milestone_Start_Date": random_date(start_window, end_window).date()
-        })
-    return pd.DataFrame(projects)
+    span = max(1, (datetime.now() - start_window).days)
 
-projects_df = generate_projects(900, milestones_df) if not milestones_df.empty else pd.DataFrame()
+    cps, mss, dates = [], [], []
+    for _ in range(len(df_uc)):
+        cp = rng.choice(checkpoints)
+        ms = rng.choice(ms_choices[cp])
+        d  = start_window + timedelta(days=rng.randint(0, span))
+        cps.append(cp); mss.append(ms); dates.append(d.date())
 
-# ---------------------------------
-# Checkpoints row (single line)
-# ---------------------------------
+    out = df_uc.copy()
+    out["Checkpoint"] = pd.Series(cps).fillna("Unassigned")
+    out["Milestone"]  = pd.Series(mss).fillna("Unassigned")
+    out["Milestone_Start_Date"] = dates
+    return out
+
+assigned_df = assign_random_process(uc_df, CHECKPOINT_ORDER, CP_TO_MS)
+# Ensure no NaN visible anywhere for these two columns
+if not assigned_df.empty:
+    assigned_df["Checkpoint"] = assigned_df["Checkpoint"].astype(str).replace({"nan":"Unassigned"}).fillna("Unassigned")
+    assigned_df["Milestone"]  = assigned_df["Milestone"].astype(str).replace({"nan":"Unassigned"}).fillna("Unassigned")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# UI: Checkpoints & Milestones
+# ──────────────────────────────────────────────────────────────────────────────
 def render_checkpoints_row():
     st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
-    cps = CHECKPOINT_ORDER
-    if not cps: return
-    cols = st.columns(len(cps))
-    for i, cp in enumerate(cps, start=1):
-        count = int(projects_df[projects_df["Checkpoint"] == cp].shape[0])
+    if not CHECKPOINT_ORDER:
+        st.info("Milestones file not found/empty.")
+        return
+    cols = st.columns(len(CHECKPOINT_ORDER))
+    for i, cp in enumerate(CHECKPOINT_ORDER, start=1):
+        count = int(assigned_df[assigned_df["Checkpoint"] == cp].shape[0]) if not assigned_df.empty else 0
         label = f"{i}. {cp}\n{count} projects"
         with cols[i-1]:
             if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
@@ -262,145 +399,206 @@ def render_checkpoints_row():
                     st.session_state.selected_checkpoint = cp
                     st.session_state.selected_milestone = None
 
-# ---------------------------------
-# Milestones grid (wrap)
-# ---------------------------------
 def render_milestones_grid(cp: str, cols_per_row: int = 4):
     if not cp: return
+    # filter out any empty/placeholder values
+    ms_list = [m for m in CP_TO_MS.get(cp, []) if str(m).strip()]
+    if not ms_list:
+        st.info("No milestones defined for this checkpoint.")
+        return
     cp_index = CHECKPOINT_ORDER.index(cp) + 1
-    ms_series = milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"].dropna().astype(str).str.strip()
-    ms_unique = [m for m in ms_series.unique().tolist() if m]
-    if not ms_unique: return
     st.markdown(f"<h2 class='section-title'>Milestones — {cp}</h2>", unsafe_allow_html=True)
     j = 1
-    for start in range(0, len(ms_unique), cols_per_row):
-        row = ms_unique[start:start+cols_per_row]
+    for start in range(0, len(ms_list), cols_per_row):
+        row = ms_list[start:start+cols_per_row]
         cols = st.columns(len(row))
         for c_i, m in enumerate(row):
-            m_count = int(projects_df[projects_df["Milestone"] == m].shape[0])
+            m_count = int(assigned_df[assigned_df["Milestone"] == m].shape[0]) if not assigned_df.empty else 0
             label = f"{cp_index}.{j} {m}\n{m_count} projects"
             with cols[c_i]:
                 if st.button(label, key=f"ms_btn_{cp_index}_{j}", use_container_width=True):
                     st.session_state.selected_milestone = (None if st.session_state.selected_milestone == m else m)
             j += 1
 
-# ---------------------------------
-# Map (capacity bubbles)
-# ---------------------------------
-STATE_CENTROIDS = {
-    "Rajasthan":  (27.0238, 74.2179),
-    "Gujarat":    (22.2587, 71.1924),
-    "Maharashtra":(19.7515, 75.7139),
-    "Karnataka":  (15.3173, 75.7139),
-    "Tamil Nadu": (11.1271, 78.6569),
-}
-
-def render_state_bubble_map(df: pd.DataFrame):
-    st.markdown("<h2 class='section-title'>India — Projects by State</h2>", unsafe_allow_html=True)
-    if df.empty: return
-    agg = df.groupby("State", as_index=False).agg(Projects=("Project_ID", "count"),
-                                                 Capacity_MW=("Capacity_MW", "sum"))
-    m = folium.Map(location=[22.97, 78.65], zoom_start=5, tiles="cartodbpositron")
-    max_cap = max(agg["Capacity_MW"]) if not agg.empty else 1
-    for state, (lat, lon) in STATE_CENTROIDS.items():
-        row = agg[agg["State"] == state]
-        capacity = int(row["Capacity_MW"].iloc[0]) if not row.empty else 0
-        radius = 12 + (capacity / max_cap) * 38 if max_cap > 0 else 12
-        popup_html = f"<b>{state}</b><br>Capacity: {capacity} MW"
-        folium.CircleMarker(location=(lat, lon), radius=radius, color="#1E6A54",
-                            fill=True, fill_color="#1E6A54", fill_opacity=0.65,
-                            tooltip=f"{state} — {capacity} MW",
-                            popup=folium.Popup(popup_html, max_width=260)).add_to(m)
-    st_folium(m, width=None, height=520)
-
-# ---------------------------------
-# KPI Cards + Dashboard
-# ---------------------------------
+# ──────────────────────────────────────────────────────────────────────────────
+# KPI + Snapshot dashboard (filters + multiple visualizations)
+# ──────────────────────────────────────────────────────────────────────────────
 def render_kpis(df: pd.DataFrame):
-    total_projects = len(df)
-    total_capacity = int(df["Capacity_MW"].sum()) if not df.empty else 0
-    avg_capacity = round(df["Capacity_MW"].mean(), 2) if not df.empty else 0
-    unique_checkpoints = df["Checkpoint"].nunique() if not df.empty else 0
-    unique_milestones = df["Milestone"].nunique() if not df.empty else 0
+    cap = pd.to_numeric(df["Capacity_MW"], errors="coerce").fillna(0.0)
+    total_projects = int(df["Project_Row"].sum()) if "Project_Row" in df.columns else len(df)
+    total_capacity = int(cap.sum())
+    avg_capacity   = round(float(cap.mean()), 2) if len(cap) else 0.0
+    type_counts = df["Project_Type"].value_counts(dropna=True)
+    solar_n  = int(type_counts.get("Solar", 0))
+    wind_n   = int(type_counts.get("Wind", 0))
+    hybrid_n = int(type_counts.get("Hybrid", 0))
+
     c1, c2, c3, c4, c5 = st.columns(5)
     for c, label, value in [
         (c1, "Total Projects", f"{total_projects:,}"),
         (c2, "Total Capacity (MW)", f"{total_capacity:,}"),
         (c3, "Avg Capacity / Project", f"{avg_capacity}"),
-        (c4, "Active Checkpoints", f"{unique_checkpoints}"),
-        (c5, "Active Milestones", f"{unique_milestones}"),
+        (c4, "Solar Projects", f"{solar_n:,}"),
+        (c5, "Wind / Hybrid", f"{wind_n:,} / {hybrid_n:,}"),
     ]:
         with c:
-            st.markdown(f"<div class='card'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div class='card'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>",
+                unsafe_allow_html=True
+            )
 
-def render_dashboard_template(df: pd.DataFrame):
-    if df.empty: return
-    st.markdown("<h2 class='section-title'>Portfolio Dashboard</h2>", unsafe_allow_html=True)
-    render_kpis(df)
-    t1c1, t1c2 = st.columns(2)
-    with t1c1:
-        ts = df.copy()
-        ts["Month"] = pd.to_datetime(ts["Milestone_Start_Date"]).dt.to_period("M").dt.to_timestamp()
-        ts_agg = ts.groupby("Month", as_index=False)["Project_ID"].count().rename(columns={"Project_ID":"Projects"})
-        fig = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects over time")
-        st.plotly_chart(fig, use_container_width=True)
-    with t1c2:
-        dev_counts = df["Developer"].value_counts().reset_index()
-        dev_counts.columns = ["Developer", "Projects"]
-        fig = px.bar(dev_counts, x="Developer", y="Projects", title="Projects by developer")
-        st.plotly_chart(fig, use_container_width=True)
-    b1c1, b1c2 = st.columns(2)
-    with b1c1:
-        cap_state = df.groupby("State", as_index=False)["Capacity_MW"].sum()
-        fig = px.bar(cap_state, x="State", y="Capacity_MW", title="Capacity by state")
-        st.plotly_chart(fig, use_container_width=True)
-    with b1c2:
-        share = df["State"].value_counts().reset_index()
-        share.columns = ["State", "Projects"]
-        fig = px.pie(share, names="State", values="Projects", hole=0.45, title="Projects share by state")
+def render_snapshot(df: pd.DataFrame):
+    if df.empty:
+        return
+    st.markdown("<h2 class='section-title'>RE projects under construction snapshot</h2>", unsafe_allow_html=True)
+
+    # Inline dashboard filter — Project Type; manual choices only
+    ft = st.selectbox(
+        "Filter — Project Type",
+        ["Choose an option", "Solar", "Wind", "Hybrid"],
+        index=0,
+    )
+    fdf = df.copy()
+    if ft != "Choose an option":
+        fdf = fdf[fdf["Project_Type"] == ft]
+
+    # KPIs
+    render_kpis(fdf)
+
+    # Row 1: Donut pie (type) + CPSU vs Private
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        cap_type = (fdf.groupby("Project_Type", as_index=False)["Capacity_MW"].sum()
+                      .sort_values("Capacity_MW", ascending=False))
+        if not cap_type.empty:
+            cap_type["Capacity_MW"] = pd.to_numeric(cap_type["Capacity_MW"], errors="coerce").fillna(0.0)
+            fig = px.pie(cap_type, names="Project_Type", values="Capacity_MW", hole=0.45,
+                         title="Capacity share by Project Type")
+            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=360, legend_traceorder='normal')
+            st.plotly_chart(fig, use_container_width=True)
+    with r1c2:
+        cls = (fdf.groupby("Owner_Class", as_index=False)
+                 .agg(Capacity_MW=("Capacity_MW","sum"), Projects=("Project_Row","sum")))
+        if not cls.empty:
+            cls["Capacity_MW"] = pd.to_numeric(cls["Capacity_MW"], errors="coerce").fillna(0.0)
+            fig = px.bar(cls, x="Owner_Class", y="Capacity_MW", text="Projects",
+                         title="CPSU vs Private (Capacity with projects count)")
+            fig.update_traces(textposition="outside")
+            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=360)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Row 2: Capacity by state + Projects by state
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        state_cap = (fdf.groupby("State", as_index=False)["Capacity_MW"].sum()
+                       .sort_values("Capacity_MW", ascending=False))
+        if not state_cap.empty:
+            state_cap["Capacity_MW"] = pd.to_numeric(state_cap["Capacity_MW"], errors="coerce").fillna(0.0)
+            fig = px.bar(state_cap, x="State", y="Capacity_MW", title="Capacity by State")
+            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
+            st.plotly_chart(fig, use_container_width=True)
+    with r2c2:
+        state_proj = (fdf.groupby("State", as_index=False)["Project_Row"].sum()
+                        .rename(columns={"Project_Row":"Projects"})
+                        .sort_values("Projects", ascending=False))
+        if not state_proj.empty:
+            fig = px.bar(state_proj, x="State", y="Projects", title="Projects by State")
+            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # Row 3 (your request): Top developers (LEFT) + Projects over time (RIGHT) in a dedicated wide row
+    r3c1, r3c2 = st.columns(2)
+    with r3c1:
+        dev_cap = (fdf.assign(Developer_display=fdf["Developer"].fillna(fdf["Developer_norm"]))
+                     .groupby("Developer_display", as_index=False)["Capacity_MW"].sum()
+                     .sort_values("Capacity_MW", ascending=False))
+        if not dev_cap.empty:
+            dev_cap["Capacity_MW"] = pd.to_numeric(dev_cap["Capacity_MW"], errors="coerce").fillna(0.0)
+            fig = px.bar(dev_cap.head(15), x="Capacity_MW", y="Developer_display",
+                         orientation="h", title="Top Developers by Capacity (MW)")
+            fig.update_layout(yaxis_title="Developer", xaxis_title="Capacity (MW)",
+                              margin=dict(l=6,r=6,t=40,b=6), height=420)
+            st.plotly_chart(fig, use_container_width=True)
+    with r3c2:
+        if "Date" in fdf.columns and fdf["Date"].notna().any():
+            ts = fdf.dropna(subset=["Date"]).copy()
+            ts["Month"] = pd.to_datetime(ts["Date"]).dt.to_period("M").dt.to_timestamp()
+            ts_agg = ts.groupby("Month", as_index=False)["Project_Row"].sum().rename(columns={"Project_Row":"Projects"})
+            if not ts_agg.empty:
+                fig = px.line(ts_agg, x="Month", y="Projects", markers=True,
+                              title="Projects over time")
+                fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=420)
+                st.plotly_chart(fig, use_container_width=True)
+
+    # Row 4: Stacked (full width) — capacity by type within top states
+    top_states = (fdf.groupby("State", as_index=False)["Capacity_MW"].sum()
+                    .sort_values("Capacity_MW", ascending=False).head(10)["State"])
+    stacked = (fdf[fdf["State"].isin(top_states)]
+                .groupby(["State","Project_Type"], as_index=False)["Capacity_MW"].sum())
+    if not stacked.empty:
+        stacked["Capacity_MW"] = pd.to_numeric(stacked["Capacity_MW"], errors="coerce").fillna(0.0)
+        fig = px.bar(stacked, x="State", y="Capacity_MW", color="Project_Type",
+                     title="Capacity by Type within Top States", barmode="stack")
+        fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380, legend_traceorder='normal')
         st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------
+    # Row 5: Bubble full width
+    sp = (fdf.groupby("State", as_index=False)
+            .agg(Projects=("Project_Row","sum"), Capacity_MW=("Capacity_MW","sum")))
+    if not sp.empty:
+        sp["Capacity_MW"] = pd.to_numeric(sp["Capacity_MW"], errors="coerce").fillna(0.0).astype(float)
+        fig = px.scatter(sp, x="Projects", y="Capacity_MW", size="Capacity_MW",
+                         hover_name="State", title="Capacity vs Projects by State")
+        fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Data export
+    st.download_button(
+        "Download filtered projects (CSV)",
+        data=fdf[["Project_Name","Developer","Owner_Class","Project_Type",
+                  "Capacity_MW","State","Checkpoint","Milestone",
+                  "Milestone_Start_Date","Date"]].to_csv(index=False).encode("utf-8"),
+        file_name="under_construction_projects_filtered.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
 # PAGE
-# ---------------------------------
-if not milestones_df.empty and not projects_df.empty and CHECKPOINT_ORDER:
+# ──────────────────────────────────────────────────────────────────────────────
+if not milestones_df.empty and not assigned_df.empty and CHECKPOINT_ORDER:
     # 1) Checkpoints single line
-    st.markdown("<h2 class='subheader'>Project Process Workflow</h2>", unsafe_allow_html=True)
-    cols = st.columns(len(CHECKPOINT_ORDER))
-    for i, cp in enumerate(CHECKPOINT_ORDER, start=1):
-        count = int(projects_df[projects_df["Checkpoint"] == cp].shape[0])
-        label = f"{i}. {cp}\n{count} projects"
-        with cols[i-1]:
-            if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
-                if st.session_state.selected_checkpoint == cp:
-                    st.session_state.selected_checkpoint = None
-                    st.session_state.selected_milestone = None
-                else:
-                    st.session_state.selected_checkpoint = cp
-                    st.session_state.selected_milestone = None
+    render_checkpoints_row()
 
-    # 2) Milestones grid (toggle) under selected checkpoint
+    # 2) Milestones grid (toggle)
     if st.session_state.selected_checkpoint:
         render_milestones_grid(st.session_state.selected_checkpoint, cols_per_row=4)
 
-    # 3) India map
-    render_state_bubble_map(projects_df)
+    # 3) Space then snapshot dashboard
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    # add spacing before dashboard
-    st.markdown("<br><br>", unsafe_allow_html=True)
-
-    # 4) Filter for dashboard + optional table
-    current_df = projects_df.copy()
+    # Optional table when a milestone is clicked
+    current_df = assigned_df.copy()
     if st.session_state.get("selected_checkpoint"):
         current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
     if st.session_state.get("selected_milestone"):
         current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
+        # Ensure no NaN shown
+        for c in ["Checkpoint","Milestone"]:
+            if c in current_df.columns:
+                current_df[c] = current_df[c].fillna("Unassigned").replace({"nan":"Unassigned"})
         st.dataframe(
-            current_df[["Project_ID","Project_Name","Developer","Capacity_MW","State","Checkpoint","Milestone","Milestone_Start_Date"]]
-            .reset_index(drop=True)
+            current_df[["Project_Name","Developer","Owner_Class","Project_Type",
+                        "Capacity_MW","State","Checkpoint","Milestone",
+                        "Milestone_Start_Date","Date"]].reset_index(drop=True),
+            use_container_width=True
         )
 
-    # 5) Tableau-like dashboard
-    render_dashboard_template(current_df)
+    # 4) Snapshot dashboard (no map)
+    render_snapshot(current_df)
+
 else:
-    st.info("Place 'Milestones in RE projects.xlsx' in the app folder to see checkpoints, milestones, projects and dashboards.")
+    if milestones_df.empty:
+        st.info("Add 'Milestones in RE projects.xlsx' (Sheet1 with Step No / Checkpoints / Milestones).")
+    if assigned_df.empty:
+        st.info("Add the Quarterly Under-Construction Excel (we only read Sheet 3: 'Under Construction Projects').")
