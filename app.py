@@ -603,161 +603,137 @@ else:
     if assigned_df.empty:
         st.info("Add the Quarterly Under-Construction Excel (we only read Sheet 3: 'Under Construction Projects').")
 
-# ------------------------------ ACTIVITY LOGS (drop-in) ------------------------------
-# Paste this block once near the bottom of app.py (after your imports/widgets).
+
+# ========================= PRIVATE ACTIVITY LOGGER =========================
+# Place this at the bottom of app.py
+
 import os, json, uuid, logging, shutil
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import streamlit as st
 
-# --- Settings
-LOG_DIR = Path("logs")
-RETENTION_DAYS = 90            # delete logs older than this
-APP_TZ = timezone(timedelta(hours=5, minutes=30))  # IST
+# --- Config ---
+PROJECT_ROOT = Path(r"C:\Users\rosei\PycharmProjects\renewable_dashboard")
+LOG_DIR = PROJECT_ROOT / "logs"
+SNAPSHOT_DIR = PROJECT_ROOT / "log_snapshots"
+RETENTION_DAYS = 90
+IST = timezone(timedelta(hours=5, minutes=30))
 
+
+# ------------------ Internal Helpers ------------------
 def _ensure_log_dir():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-def _current_log_path() -> str:
-    _ensure_log_dir()
-    today = datetime.now(APP_TZ).strftime("%Y-%m-%d")
-    return str(LOG_DIR / f"activity_{today}.txt")
 
-def _get_session_id() -> str:
+def _today_log_path() -> Path:
+    _ensure_log_dir()
+    return LOG_DIR / f"activity_{datetime.now(IST).strftime('%Y-%m-%d')}.txt"
+
+
+def _session_id() -> str:
     if "sid" not in st.session_state:
         st.session_state.sid = uuid.uuid4().hex
     return st.session_state.sid
 
-def _get_logger() -> logging.Logger:
-    """
-    Create or reuse a logger that writes JSON lines to today's file.
-    Ensures no duplicate handlers across reruns.
-    """
+
+def _logger() -> logging.Logger:
     _ensure_log_dir()
-    path = _current_log_path()
+    fp = os.path.abspath(str(_today_log_path()))
+    lg = logging.getLogger("private_activity")
+    lg.setLevel(logging.INFO)
 
-    logger = logging.getLogger("activity")
-    logger.setLevel(logging.INFO)
-
-    # If a FileHandler already points to today's file, reuse it; otherwise refresh.
-    def _handler_points_to_today(h):
-        return isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == os.path.abspath(path)
-
-    if not any(_handler_points_to_today(h) for h in logger.handlers):
-        # remove old file handlers
-        logger.handlers = [h for h in logger.handlers if not isinstance(h, logging.FileHandler)]
-        fh = logging.FileHandler(path, encoding="utf-8")
+    # Ensure exactly one FileHandler for today's file
+    if not any(
+        isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == fp
+        for h in lg.handlers
+    ):
+        # Remove old handlers
+        lg.handlers = [h for h in lg.handlers if not isinstance(h, logging.FileHandler)]
+        fh = logging.FileHandler(fp, encoding="utf-8")
         fh.setLevel(logging.INFO)
-        # we only write JSON messages, so keep formatter simple
         fh.setFormatter(logging.Formatter("%(message)s"))
-        logger.addHandler(fh)
+        lg.addHandler(fh)
 
-    return logger
+    return lg
 
+
+# ------------------ Public Functions ------------------
 def log_event(event: str, **fields):
     """
-    Write one JSON line (UTF-8) with UTC+IST dual timestamps, session id and fields.
+    Write one JSON line: UTC+IST timestamps, session id, and fields.
+    Example: log_event("clicked_export", rows=len(df))
     """
-    logger = _get_logger()
-    now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    now_ist = now_utc.astimezone(APP_TZ)
-
-    record = {
-        "ts_utc": now_utc.isoformat().replace("+00:00", "Z"),
-        "ts_ist": now_ist.isoformat(),
-        "session_id": _get_session_id(),
-        "event": event,
-        "fields": fields,
-    }
     try:
-        logger.info(json.dumps(record, ensure_ascii=False))
+        lg = _logger()
+        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        now_ist = now_utc.astimezone(IST)
+        record = {
+            "ts_utc": now_utc.isoformat().replace("+00:00", "Z"),
+            "ts_ist": now_ist.isoformat(),
+            "session_id": _session_id(),
+            "event": event,
+            "fields": fields,
+        }
+        lg.info(json.dumps(record, ensure_ascii=False))
     except Exception as e:
-        # Last resort: avoid breaking the app if logging fails
         print("LOGGING_ERROR:", e)
 
-def _prune_old_logs(days=RETENTION_DAYS):
+
+def _prune_old_logs(days: int = RETENTION_DAYS):
     _ensure_log_dir()
-    cutoff = datetime.now(APP_TZ) - timedelta(days=days)
+    cutoff = datetime.now(IST) - timedelta(days=days)
     for p in LOG_DIR.glob("activity_*.txt"):
         try:
-            # parse date from filename
-            stamp = p.stem.split("_")[-1]  # 'YYYY-MM-DD'
-            fdate = datetime.strptime(stamp, "%Y-%m-%d").replace(tzinfo=APP_TZ)
-            if fdate < cutoff:
+            stamp = p.stem.split("_")[-1]
+            when = datetime.strptime(stamp, "%Y-%m-%d").replace(tzinfo=IST)
+            if when < cutoff:
                 p.unlink(missing_ok=True)
         except Exception:
-            # ignore unparsable files
             pass
 
-# --- Auto log a page view once per session
-if not st.session_state.get("_logged_pageview"):
-    log_event("page_view", path=st.query_params.to_dict() if hasattr(st, "query_params") else {})
-    st.session_state["_logged_pageview"] = True
 
-# --- Optional: watch common session-state keys from your app and log on change
-for _watch_key in ("selected_checkpoint", "selected_milestone", "selected_state"):
-    if _watch_key in st.session_state:
-        last_key = f"_last_logged__{_watch_key}"
-        cur_val = st.session_state[_watch_key]
-        if st.session_state.get(last_key) != cur_val:
-            log_event("state_change", key=_watch_key, value=cur_val)
-            st.session_state[last_key] = cur_val
-
-# --- Keep logs tidy
-_prune_old_logs()
-
-# --- Sidebar: downloads & preview
-with st.sidebar.expander("📜 Activity logs", expanded=False):
+# ------------------ Auto logging ------------------
+if not st.session_state.get("_pv_logged"):
+    q = {}
     try:
-        # Download today's log
-        today_path = _current_log_path()
-        if os.path.exists(today_path):
-            with open(today_path, "rb") as f:
-                st.download_button(
-                    "Download today's log (.txt)",
-                    data=f.read(),
-                    file_name=os.path.basename(today_path),
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-        else:
-            st.caption("No log file created yet today.")
+        q = st.query_params.to_dict() if hasattr(st, "query_params") else {}
+    except Exception:
+        pass
+    log_event("page_view", query=q)
+    st.session_state["_pv_logged"] = True
 
-        # Download ALL logs as ZIP
-        if os.path.isdir(LOG_DIR) and len(os.listdir(LOG_DIR)) > 0:
-            zip_basename = f"logs_bundle_{datetime.now(APP_TZ).strftime('%Y%m%d_%H%M')}"
-            shutil.make_archive(zip_basename, "zip", LOG_DIR)  # creates '<basename>.zip'
-            zip_path = f"{zip_basename}.zip"
-            with open(zip_path, "rb") as zf:
-                st.download_button(
-                    "Download ALL logs (.zip)",
-                    data=zf.read(),
-                    file_name=os.path.basename(zip_path),
-                    mime="application/zip",
-                    use_container_width=True,
-                )
-            # cleanup temp zip
-            try:
-                os.remove(zip_path)
-            except Exception:
-                pass
+for key in ("selected_checkpoint", "selected_milestone", "selected_state"):
+    if key in st.session_state:
+        shadow = f"__last_{key}"
+        cur = st.session_state[key]
+        safe = "" if cur is None else ("" if str(cur).lower() == "nan" else cur)
+        if st.session_state.get(shadow) != cur:
+            log_event("state_change", key=key, value=str(safe))
+            st.session_state[shadow] = cur
 
-        # Tail preview
-        n = st.slider("Preview last N lines", 10, 500, 50)
-        if os.path.exists(today_path):
-            try:
-                with open(today_path, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
-                tail = "".join(lines[-n:])
-                st.code(tail or "(file exists but is currently empty)", language="json")
-            except Exception as e:
-                st.caption(f"(Could not preview log: {e})")
+_prune_old_logs()
+# ======================= END PRIVATE LOGGER =======================
 
-        # Simple event to test logging from the UI
-        if st.button("Write a test log line", use_container_width=True):
-            log_event("test_click", note="user pressed test button")
-            st.success("Wrote a test event to today's log.")
 
-    except Exception as e:
-        st.warning(f"Log tools unavailable: {e}")
-# ---------------------------- END ACTIVITY LOGS (drop-in) ----------------------------
+# ======================= DAILY SNAPSHOT SCRIPT =======================
+# Save this as tools/daily_log_snapshot.py
+
+if __name__ == "__main__" and "daily_log_snapshot" in os.path.basename(__file__):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(IST).strftime("%Y%m%d_%H%M")
+    base = SNAPSHOT_DIR / f"logs_snapshot_{stamp}"
+    zip_path = shutil.make_archive(str(base), "zip", LOG_DIR)
+    print(f"[OK] Snapshot written: {zip_path}")
+
+
+# ======================= MANUAL PULL SCRIPT =======================
+# Save this as tools/pull_logs_now.py
+
+if __name__ == "__main__" and "pull_logs_now" in os.path.basename(__file__):
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+    base = SNAPSHOT_DIR / f"logs_manual_{stamp}"
+    zip_path = shutil.make_archive(str(base), "zip", LOG_DIR)
+    print(f"[OK] Manual bundle created: {zip_path}")
