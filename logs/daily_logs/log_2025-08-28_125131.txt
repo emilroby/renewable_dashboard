@@ -1,0 +1,3 @@
+No log found to snapshot.
+Expected at: C:\Users\rosei\PycharmProjects\renewable_dashboard\logs\app_activity.log
+Created at: 2025-08-28T12:51:31
