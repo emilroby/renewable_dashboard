@@ -11,7 +11,7 @@
 import re
 import base64
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -29,13 +29,30 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+/* Global base + background + remove top gaps */
+html, body { margin: 0 !important; padding: 0 !important; }
 html, body, [data-testid="stAppViewContainer"] {
   background:
     radial-gradient(1200px 700px at 12% -10%, #F3FAF6 0%, transparent 60%),
     radial-gradient(1200px 700px at 90% 0%, #E8F3EE 0%, transparent 65%),
     linear-gradient(180deg, #FFFFFF 0%, #F7FBF9 100%);
 }
-.stApp { font-family: 'Poppins', sans-serif; }
+.stApp { font-family: 'Poppins', sans-serif; padding-top: 0 !important; }
+
+/* Hide Streamlit chrome */
+div[data-testid="stToolbar"] {display:none !important;}
+div[data-testid="stDecoration"] {display:none !important;}
+div[data-testid="stStatusWidget"] {display:none !important;}
+header {visibility:hidden; height:0 !important;}
+#MainMenu {visibility:hidden;}
+footer {visibility:hidden;}
+
+/* Remove top whitespace completely for the content area */
+div[data-testid="stAppViewContainer"] .main .block-container {
+  padding-top: 0rem !important;   /* no inner padding above */
+  margin-top: 0 !important;
+  padding-bottom: 1rem !important;
+}
 
 /* Title */
 .main-title{
@@ -52,12 +69,12 @@ html, body, [data-testid="stAppViewContainer"] {
   font-size: 26px !important;
   font-weight: 700 !important;
   color: #1b5e20 !important;
-  margin-top: 16px;
+  margin-top: 10px;
   margin-bottom: 10px;
   text-align: center;
 }
 
-/* Buttons used as cards */
+/* Buttons as cards */
 div.stButton > button {
   border-radius: 16px !important;
   font-size: 16px !important;
@@ -80,7 +97,7 @@ div.stButton > button:hover {
   transform: translateY(-1px);
 }
 
-/* KPI/Panel cards */
+/* KPI cards */
 .card {
   border-radius: 16px;
   padding: 16px 18px;
@@ -95,26 +112,72 @@ div.stButton > button:hover {
   font-size: 12px; font-weight: 600; color:#2f6a57; text-transform: uppercase; letter-spacing:.5px;
 }
 
-/* Tighten plot paddings to reduce gaps */
+/* Plotly background transparent */
 .js-plotly-plot .plotly .main-svg { background: rgba(0,0,0,0) !important; }
+
+/* Timebar styling (sits at the very top) */
+.timebar {
+  margin: 0 !important;
+  padding: 2px 6px 2px 2px !important;
+  font-weight: 700;
+  color: #0F4237;
+  font-size: 14px;
+  font-family: Poppins,system-ui,Arial;
+  user-select: none;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.7);
+}
+/* === NEW FIXES TO REMOVE TOP WHITESPACE === */
+[data-testid="stAppViewBlockContainer"] {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+[data-testid="column"] {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+.timebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 9999;
+}
+/* === NEW FIX TO REMOVE DEFAULT STREAMLIT WHITESPACE === */
+.block-container {
+    padding-top: 0rem !important;
+    margin-top: 0rem !important;
+}
+[data-testid="stAppViewBlockContainer"] {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+header, .css-18ni7ap { 
+    display: none !important; /* hides Streamlit's invisible header */
+}
+/* ========================================== */
+
 </style>
 <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
 """, unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Session state
+# Session state defaults (prevents AttributeError)
 # ──────────────────────────────────────────────────────────────────────────────
-for k, v in {"selected_state": None, "selected_checkpoint": None, "selected_milestone": None}.items():
+for k, v in {
+    "selected_state": None,
+    "selected_checkpoint": None,
+    "selected_milestone": None,
+    "_pv_logged": False,  # used by private logger
+}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ──────────────────────────────────────────────────────────────────────────────
-# TOP: Live Date/Time (extreme left)
+# Top timestamp/date (no padding above, visible)
 # ──────────────────────────────────────────────────────────────────────────────
 components.html("""
-  <div style="font-family:Poppins,system-ui,Arial; display:flex; align-items:center; gap:18px;
-              padding:2px 0 6px 2px; font-weight:700; color:#0F4237; font-size:14px; justify-content:flex-start;">
-    <span id="live-date"></span><span style="opacity:.5">|</span><span id="live-time"></span>
+  <style> html,body{margin:0;padding:0;} </style>
+  <div class="timebar">
+    <span id="live-date"></span><span style="opacity:.5"> | </span><span id="live-time"></span>
   </div>
   <script>
     (function(){
@@ -122,20 +185,24 @@ components.html("""
         const now = new Date();
         const opts = { timeZone:'Asia/Kolkata', year:'numeric', month:'long', day:'2-digit',
                        hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false };
-        const parts = new Intl.DateTimeFormat('en-GB', opts).formatToParts(now)
-                      .reduce((a,p)=>{a[p.type]=p.value; return a;}, {});
-        const day = parts.day; const month = (parts.month||'').toLowerCase(); const year = parts.year;
-        const time = `${parts.hour}:${parts.minute}:${parts.second} IST`;
+        const partsObj = {};
+        for (const p of new Intl.DateTimeFormat('en-GB', opts).formatToParts(now)) {
+          partsObj[p.type] = p.value;
+        }
+        const day = partsObj.day || '';
+        const month = (partsObj.month || '').toLowerCase();
+        const year = partsObj.year || '';
+        const time = `${partsObj.hour || '00'}:${partsObj.minute || '00'}:${partsObj.second || '00'} IST`;
         document.getElementById('live-date').textContent = `${day} - ${month} - ${year}`;
         document.getElementById('live-time').textContent = time;
       }
       render(); setInterval(render, 1000);
     })();
   </script>
-""", height=30)
+""", height=28)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Logos + Title Row (inline)
+# Logos + Title Row
 # ──────────────────────────────────────────────────────────────────────────────
 def find_logo(possible_names):
     cwd = Path(".").resolve()
@@ -246,15 +313,17 @@ if not milestones_df.empty:
                    .drop_duplicates(subset=["Checkpoint"], keep="first"))
     CHECKPOINT_ORDER = (cp_order_df.sort_values("Step_No")["Checkpoint"].tolist()
                         if "Step_No" in cp_order_df.columns else cp_order_df["Checkpoint"].tolist())
-    # Make sure milestone lists have no NaN/empty values
-    CP_TO_MS = {cp: [m for m in milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"]
-                     .astype(str).str.strip().tolist() if str(m).strip().lower() != "nan"]
-                for cp in CHECKPOINT_ORDER}
+    # Clean milestone lists
+    CP_TO_MS = {}
+    for cp in CHECKPOINT_ORDER:
+        ms = milestones_df.loc[milestones_df["Checkpoint"] == cp, "Milestone"].astype(str).str.strip().tolist()
+        ms = [m for m in ms if m and m.lower() != "nan"]
+        CP_TO_MS[cp] = ms
 else:
     CHECKPOINT_ORDER, CP_TO_MS = [], {}
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Under-construction Excel — ONLY Sheet 3: “Under Construction Projects”
+# Under-construction Excel — ONLY Sheet 3
 # ──────────────────────────────────────────────────────────────────────────────
 UC_FILE_CANDIDATES = [
     "Quarterly_Report_on_Under_Construction_Renewable_Energy_Projects_as_on_June_2025.xlsx",
@@ -271,13 +340,13 @@ def read_uc_ucprojects_sheet(path: str):
     xl = pd.ExcelFile(path)
     wanted = None
     for nm in xl.sheet_names:
-        if str(nm).strip().lower() == "under construction projects":
-            wanted = nm
-            break
+      if str(nm).strip().lower() == "under construction projects":
+        wanted = nm
+        break
     if wanted is None:
         raise ValueError("The workbook does not contain a sheet named 'Under Construction Projects'.")
     df = xl.parse(wanted)
-    df.rename(columns=lambda x: str(x).strip().replace("\n"," ").replace("  "," "), inplace=True)
+    df.rename(columns=lambda x: str(x).strip().replace("\\n"," ").replace("  "," "), inplace=True)
     return df
 
 def normalize_project_type(v: str) -> str:
@@ -320,18 +389,15 @@ def load_uc_clean(path: str):
     df["Capacity_MW"]  = raw[c_cap].apply(parse_mw) if c_cap else pd.NA
     df["Date"]         = pd.to_datetime(raw[c_cod], errors="coerce") if c_cod else pd.NaT
 
-    # Drop total/blank rows
     mask_total = (df["Project_Name"].str.contains("total", case=False, na=False)) | \
                  (df["State"].str.contains("total", case=False, na=False))
     df = df[~mask_total]
     df = df.dropna(how="all", subset=["Project_Name","State","Capacity_MW"])
 
-    # Normalizations / derived fields
     df["Project_Type"] = df["Project_Type"].fillna("").apply(normalize_project_type)
     df["Owner_Class"]  = df["Developer"].fillna("").apply(classify_owner)
     df["Developer_norm"] = (df["Developer"].fillna("")
                             .str.lower().str.strip().str.replace(r"\s+"," ", regex=True))
-
     df["Project_Row"] = 1
     return df.reset_index(drop=True)
 
@@ -373,7 +439,6 @@ def assign_random_process(df_uc: pd.DataFrame, checkpoints: list[str], cp_to_ms:
     return out
 
 assigned_df = assign_random_process(uc_df, CHECKPOINT_ORDER, CP_TO_MS)
-# Ensure no NaN visible anywhere for these two columns
 if not assigned_df.empty:
     assigned_df["Checkpoint"] = assigned_df["Checkpoint"].astype(str).replace({"nan":"Unassigned"}).fillna("Unassigned")
     assigned_df["Milestone"]  = assigned_df["Milestone"].astype(str).replace({"nan":"Unassigned"}).fillna("Unassigned")
@@ -392,7 +457,7 @@ def render_checkpoints_row():
         label = f"{i}. {cp}\n{count} projects"
         with cols[i-1]:
             if st.button(label, key=f"cp_btn_{i}", use_container_width=True):
-                if st.session_state.selected_checkpoint == cp:
+                if st.session_state.get("selected_checkpoint") == cp:
                     st.session_state.selected_checkpoint = None
                     st.session_state.selected_milestone = None
                 else:
@@ -401,7 +466,6 @@ def render_checkpoints_row():
 
 def render_milestones_grid(cp: str, cols_per_row: int = 4):
     if not cp: return
-    # filter out any empty/placeholder values
     ms_list = [m for m in CP_TO_MS.get(cp, []) if str(m).strip()]
     if not ms_list:
         st.info("No milestones defined for this checkpoint.")
@@ -417,11 +481,11 @@ def render_milestones_grid(cp: str, cols_per_row: int = 4):
             label = f"{cp_index}.{j} {m}\n{m_count} projects"
             with cols[c_i]:
                 if st.button(label, key=f"ms_btn_{cp_index}_{j}", use_container_width=True):
-                    st.session_state.selected_milestone = (None if st.session_state.selected_milestone == m else m)
+                    st.session_state.selected_milestone = (None if st.session_state.get("selected_milestone") == m else m)
             j += 1
 
 # ──────────────────────────────────────────────────────────────────────────────
-# KPI + Snapshot dashboard (filters + multiple visualizations)
+# KPI + Snapshot dashboard
 # ──────────────────────────────────────────────────────────────────────────────
 def render_kpis(df: pd.DataFrame):
     cap = pd.to_numeric(df["Capacity_MW"], errors="coerce").fillna(0.0)
@@ -452,20 +516,15 @@ def render_snapshot(df: pd.DataFrame):
         return
     st.markdown("<h2 class='section-title'>RE projects under construction snapshot</h2>", unsafe_allow_html=True)
 
-    # Inline dashboard filter — Project Type; manual choices only
-    ft = st.selectbox(
-        "Filter — Project Type",
-        ["Choose an option", "Solar", "Wind", "Hybrid"],
-        index=0,
-    )
+    # Inline dashboard filter — manual choices
+    ft = st.selectbox("Filter — Project Type", ["Choose an option", "Solar", "Wind", "Hybrid"], index=0)
     fdf = df.copy()
     if ft != "Choose an option":
         fdf = fdf[fdf["Project_Type"] == ft]
 
-    # KPIs
     render_kpis(fdf)
 
-    # Row 1: Donut pie (type) + CPSU vs Private
+    # Row 1
     r1c1, r1c2 = st.columns(2)
     with r1c1:
         cap_type = (fdf.groupby("Project_Type", as_index=False)["Capacity_MW"].sum()
@@ -474,7 +533,7 @@ def render_snapshot(df: pd.DataFrame):
             cap_type["Capacity_MW"] = pd.to_numeric(cap_type["Capacity_MW"], errors="coerce").fillna(0.0)
             fig = px.pie(cap_type, names="Project_Type", values="Capacity_MW", hole=0.45,
                          title="Capacity share by Project Type")
-            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=360, legend_traceorder='normal')
+            fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=360)
             st.plotly_chart(fig, use_container_width=True)
     with r1c2:
         cls = (fdf.groupby("Owner_Class", as_index=False)
@@ -487,7 +546,7 @@ def render_snapshot(df: pd.DataFrame):
             fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=360)
             st.plotly_chart(fig, use_container_width=True)
 
-    # Row 2: Capacity by state + Projects by state
+    # Row 2
     r2c1, r2c2 = st.columns(2)
     with r2c1:
         state_cap = (fdf.groupby("State", as_index=False)["Capacity_MW"].sum()
@@ -506,7 +565,7 @@ def render_snapshot(df: pd.DataFrame):
             fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
             st.plotly_chart(fig, use_container_width=True)
 
-    # Row 3 (your request): Top developers (LEFT) + Projects over time (RIGHT) in a dedicated wide row
+    # Row 3
     r3c1, r3c2 = st.columns(2)
     with r3c1:
         dev_cap = (fdf.assign(Developer_display=fdf["Developer"].fillna(fdf["Developer_norm"]))
@@ -525,12 +584,11 @@ def render_snapshot(df: pd.DataFrame):
             ts["Month"] = pd.to_datetime(ts["Date"]).dt.to_period("M").dt.to_timestamp()
             ts_agg = ts.groupby("Month", as_index=False)["Project_Row"].sum().rename(columns={"Project_Row":"Projects"})
             if not ts_agg.empty:
-                fig = px.line(ts_agg, x="Month", y="Projects", markers=True,
-                              title="Projects over time")
+                fig = px.line(ts_agg, x="Month", y="Projects", markers=True, title="Projects over time")
                 fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=420)
                 st.plotly_chart(fig, use_container_width=True)
 
-    # Row 4: Stacked (full width) — capacity by type within top states
+    # Row 4
     top_states = (fdf.groupby("State", as_index=False)["Capacity_MW"].sum()
                     .sort_values("Capacity_MW", ascending=False).head(10)["State"])
     stacked = (fdf[fdf["State"].isin(top_states)]
@@ -539,10 +597,10 @@ def render_snapshot(df: pd.DataFrame):
         stacked["Capacity_MW"] = pd.to_numeric(stacked["Capacity_MW"], errors="coerce").fillna(0.0)
         fig = px.bar(stacked, x="State", y="Capacity_MW", color="Project_Type",
                      title="Capacity by Type within Top States", barmode="stack")
-        fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380, legend_traceorder='normal')
+        fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Row 5: Bubble full width
+    # Row 5
     sp = (fdf.groupby("State", as_index=False)
             .agg(Projects=("Project_Row","sum"), Capacity_MW=("Capacity_MW","sum")))
     if not sp.empty:
@@ -552,7 +610,7 @@ def render_snapshot(df: pd.DataFrame):
         fig.update_layout(margin=dict(l=6,r=6,t=40,b=6), height=380)
         st.plotly_chart(fig, use_container_width=True)
 
-    # Data export
+    # Export
     st.download_button(
         "Download filtered projects (CSV)",
         data=fdf[["Project_Name","Developer","Owner_Class","Project_Type",
@@ -567,23 +625,18 @@ def render_snapshot(df: pd.DataFrame):
 # PAGE
 # ──────────────────────────────────────────────────────────────────────────────
 if not milestones_df.empty and not assigned_df.empty and CHECKPOINT_ORDER:
-    # 1) Checkpoints single line
     render_checkpoints_row()
 
-    # 2) Milestones grid (toggle)
-    if st.session_state.selected_checkpoint:
-        render_milestones_grid(st.session_state.selected_checkpoint, cols_per_row=4)
+    if st.session_state.get("selected_checkpoint"):
+        render_milestones_grid(st.session_state.get("selected_checkpoint"), cols_per_row=4)
 
-    # 3) Space then snapshot dashboard
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Optional table when a milestone is clicked
     current_df = assigned_df.copy()
     if st.session_state.get("selected_checkpoint"):
-        current_df = current_df[current_df["Checkpoint"] == st.session_state.selected_checkpoint]
+        current_df = current_df[current_df["Checkpoint"] == st.session_state.get("selected_checkpoint")]
     if st.session_state.get("selected_milestone"):
-        current_df = current_df[current_df["Milestone"] == st.session_state.selected_milestone]
-        # Ensure no NaN shown
+        current_df = current_df[current_df["Milestone"] == st.session_state.get("selected_milestone")]
         for c in ["Checkpoint","Milestone"]:
             if c in current_df.columns:
                 current_df[c] = current_df[c].fillna("Unassigned").replace({"nan":"Unassigned"})
@@ -594,7 +647,6 @@ if not milestones_df.empty and not assigned_df.empty and CHECKPOINT_ORDER:
             use_container_width=True
         )
 
-    # 4) Snapshot dashboard (no map)
     render_snapshot(current_df)
 
 else:
@@ -603,66 +655,45 @@ else:
     if assigned_df.empty:
         st.info("Add the Quarterly Under-Construction Excel (we only read Sheet 3: 'Under Construction Projects').")
 
-
 # ========================= PRIVATE ACTIVITY LOGGER =========================
-# Place this at the bottom of app.py
-
 import os, json, uuid, logging, shutil
-from pathlib import Path
-from datetime import datetime, timedelta, timezone
-import streamlit as st
+from pathlib import Path as _Path
 
-# --- Config ---
-PROJECT_ROOT = Path(r"C:\Users\rosei\PycharmProjects\renewable_dashboard")
+PROJECT_ROOT = _Path(r"C:\Users\rosei\PycharmProjects\renewable_dashboard")
 LOG_DIR = PROJECT_ROOT / "logs"
 SNAPSHOT_DIR = PROJECT_ROOT / "log_snapshots"
 RETENTION_DAYS = 90
 IST = timezone(timedelta(hours=5, minutes=30))
 
-
-# ------------------ Internal Helpers ------------------
 def _ensure_log_dir():
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def _today_log_path() -> Path:
+def _today_log_path() -> _Path:
     _ensure_log_dir()
     return LOG_DIR / f"activity_{datetime.now(IST).strftime('%Y-%m-%d')}.txt"
-
 
 def _session_id() -> str:
     if "sid" not in st.session_state:
         st.session_state.sid = uuid.uuid4().hex
     return st.session_state.sid
 
-
 def _logger() -> logging.Logger:
     _ensure_log_dir()
     fp = os.path.abspath(str(_today_log_path()))
     lg = logging.getLogger("private_activity")
     lg.setLevel(logging.INFO)
-
-    # Ensure exactly one FileHandler for today's file
     if not any(
         isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == fp
         for h in lg.handlers
     ):
-        # Remove old handlers
         lg.handlers = [h for h in lg.handlers if not isinstance(h, logging.FileHandler)]
         fh = logging.FileHandler(fp, encoding="utf-8")
         fh.setLevel(logging.INFO)
         fh.setFormatter(logging.Formatter("%(message)s"))
         lg.addHandler(fh)
-
     return lg
 
-
-# ------------------ Public Functions ------------------
 def log_event(event: str, **fields):
-    """
-    Write one JSON line: UTC+IST timestamps, session id, and fields.
-    Example: log_event("clicked_export", rows=len(df))
-    """
     try:
         lg = _logger()
         now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -678,7 +709,6 @@ def log_event(event: str, **fields):
     except Exception as e:
         print("LOGGING_ERROR:", e)
 
-
 def _prune_old_logs(days: int = RETENTION_DAYS):
     _ensure_log_dir()
     cutoff = datetime.now(IST) - timedelta(days=days)
@@ -691,8 +721,6 @@ def _prune_old_logs(days: int = RETENTION_DAYS):
         except Exception:
             pass
 
-
-# ------------------ Auto logging ------------------
 if not st.session_state.get("_pv_logged"):
     q = {}
     try:
@@ -712,12 +740,8 @@ for key in ("selected_checkpoint", "selected_milestone", "selected_state"):
             st.session_state[shadow] = cur
 
 _prune_old_logs()
-# ======================= END PRIVATE LOGGER =======================
 
-
-# ======================= DAILY SNAPSHOT SCRIPT =======================
-# Save this as tools/daily_log_snapshot.py
-
+# ===== optional: daily/manual snapshot if this file is executed directly with a different name =====
 if __name__ == "__main__" and "daily_log_snapshot" in os.path.basename(__file__):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -725,10 +749,6 @@ if __name__ == "__main__" and "daily_log_snapshot" in os.path.basename(__file__)
     base = SNAPSHOT_DIR / f"logs_snapshot_{stamp}"
     zip_path = shutil.make_archive(str(base), "zip", LOG_DIR)
     print(f"[OK] Snapshot written: {zip_path}")
-
-
-# ======================= MANUAL PULL SCRIPT =======================
-# Save this as tools/pull_logs_now.py
 
 if __name__ == "__main__" and "pull_logs_now" in os.path.basename(__file__):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
